@@ -419,6 +419,41 @@ do_startup() {
   done < <(state::list)
 
   wtdc::info "dev containers tracked: $tracked, running: $running"
+  do_prune
+}
+
+# Remove machine profiles this plugin created whose container no longer answers.
+#
+# teardown removes the profile, but a container can die without that happening:
+# docker stopped it, the daemon restarted, the host rebooted. The profile then
+# sits in the sidebar forever and every connection attempt fails. Only profiles
+# whose ssh target carries this plugin's alias prefix are considered, so hand
+# written machines like Oracle-worker-1 are never touched.
+do_prune() {
+  local id label target removed=0 checked=0
+  while IFS=$'\t' read -r id label target; do
+    case "$target" in
+      "herdr-${WTDC_MACHINE_LABEL_PREFIX}-"*) ;;
+      *) continue ;;
+    esac
+    checked=$((checked + 1))
+    if ssh -o BatchMode=yes -o ConnectTimeout=3 \
+      "$target" true >/dev/null 2>&1; then
+      continue
+    fi
+    if wtdc::herdr machine remove "$id" >/dev/null 2>&1; then
+      removed=$((removed + 1))
+      wtdc::info "pruned dead machine: $label ($target)"
+    fi
+  done < <(wtdc::herdr machine list --json 2>/dev/null | jq -r '
+    (if type == "object" then (.machines // .profiles // []) else . end)
+    | .[] | [(.id // .machine_id // ""), (.label // ""), (.target // "")] | @tsv
+  ' 2>/dev/null)
+
+  [ "$removed" -gt 0 ] &&
+    wtdc::notify "Removed $removed dead dev container machine(s)" \
+      "their containers were no longer reachable" done
+  return 0
 }
 
 # ---------------------------------------------------------------- actions
@@ -646,6 +681,7 @@ main() {
     provision)    wtdc::load_config; do_provision "${1:?worktree path required}" "${2:-}" "${3:-}" ;;
     teardown)     wtdc::load_config; do_teardown "${1:?worktree path required}" "${2:-0}" ;;
     status)       do_status ;;
+    prune)        wtdc::load_config; do_prune ;;
     selftest)     do_selftest ;;
     action)
       wtdc::load_config
@@ -653,6 +689,7 @@ main() {
         provision) action_provision ;;
         teardown)  action_teardown ;;
         status)    action_status ;;
+        prune)     do_prune ;;
         *) wtdc::die "unknown action: ${1:-}" ;;
       esac
       ;;

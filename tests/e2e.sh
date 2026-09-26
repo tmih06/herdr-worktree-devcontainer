@@ -137,6 +137,9 @@ STUB
 cat >"$BIN/ssh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$WTDC_FAKE_STATE/ssh_calls"
+case "$*" in
+  *herdr-devc-dead*) exit 255 ;;   # a container that is gone
+esac
 exit 0
 STUB
 
@@ -169,11 +172,14 @@ fi
 if [ "$1" = "machine" ] && [ "$2" = "list" ]; then
   label=""
   [ -f "$WTDC_FAKE_STATE/machine_label" ] && label="$(cat "$WTDC_FAKE_STATE/machine_label")"
-  printf '[{"id":"m1","label":"%s","target":"x","enabled":true}]\n' "$label"
+  printf '[{"id":"m1","label":"%s","target":"herdr-devc-demo","enabled":true},' "$label"
+  printf '{"id":"m_dead","label":"devc-dead","target":"herdr-devc-dead","enabled":true},'
+  printf '{"id":"m_oracle","label":"Oracle-worker-1","target":"ubuntu@oracle-worker-1","enabled":true}]\n'
   exit 0
 fi
 if [ "$1" = "machine" ] && [ "$2" = "remove" ]; then
   echo "removed" >"$WTDC_FAKE_STATE/machine_removed"
+  echo "$3" >>"$WTDC_FAKE_STATE/removed_machines"
   exit 0
 fi
 # Herdr accepts `--machine <id>` in front of the subcommand, so match on the
@@ -296,6 +302,16 @@ expect 'no features, so no per-workspace image is built' '0' \
   "$(jq -r '.features // {} | length' "$merged6")"
 # Tear it down again: later sections assert on a single tracked worktree.
 "$PLUGIN_ROOT/bin/wtdc" teardown "$WT6" >/dev/null 2>&1
+
+step "prune removes dead machines and nothing else"
+: > "$WTDC_FAKE_STATE/removed_machines"
+"$PLUGIN_ROOT/bin/wtdc" prune >/dev/null 2>&1
+expect 'the unreachable devc machine is removed' 'yes' \
+  "$(grep -qx m_dead "$WTDC_FAKE_STATE/removed_machines" && echo yes || echo no)"
+expect 'the reachable devc machine is kept' 'no' \
+  "$(grep -qx m1 "$WTDC_FAKE_STATE/removed_machines" && echo yes || echo no)"
+expect 'a hand written machine is never touched' 'no' \
+  "$(grep -qx m_oracle "$WTDC_FAKE_STATE/removed_machines" && echo yes || echo no)"
 
 step "template names resolve through the manifest"
 expect 'template resolves to the registry ref' 'ghcr.io/tmih06/herdr-devcontainer-rust:latest' \

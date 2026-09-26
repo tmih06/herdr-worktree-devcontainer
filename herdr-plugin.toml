@@ -32,6 +32,12 @@ contexts = ["global", "workspace"]
 command = ["bash", "bin/wtdc", "action", "status"]
 
 [[actions]]
+id = "prune"
+title = "Dev container: forget dead machines"
+contexts = ["global", "workspace"]
+command = ["bash", "bin/wtdc", "action", "prune"]
+
+[[actions]]
 id = "teardown"
 title = "Dev container: destroy for this worktree"
 contexts = ["workspace"]
