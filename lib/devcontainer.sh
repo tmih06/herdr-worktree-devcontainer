@@ -351,6 +351,14 @@ dc::remove_orphans() {
   return 0
 }
 
+# Has postCreateCommand finished? The first thing it does is record the user it
+# provisioned, so that file appearing is the signal that authorized_keys is
+# written and the container is ready to be talked to.
+dc::postcreate_done() {
+  local cid="$1"
+  docker exec "$cid" sh -lc '[ -f /tmp/wtdc-user ]' >/dev/null 2>&1
+}
+
 # dc::container_for <worktree_path> -> container id from the devcontainer label
 dc::container_for() {
   local wt="$1"
@@ -358,9 +366,19 @@ dc::container_for() {
 }
 
 # dc::up <worktree> <merged_config> -> container id on stdout
-# stderr is left attached so the build log streams into the plugin's pane.
+#
+# Deliberately does not simply block on `devcontainer up` returning. The CLI
+# leaves a foreground `docker run` attached to the container, and that process
+# does not always exit even though the container is fully up and usable: the
+# CLI was observed still waiting 11 minutes after /tmp/wtdc-user existed and
+# sshd was accepting connections. Waiting on the CLI therefore meant freezing
+# with a working container on screen.
+#
+# So: run it in the background, wait for the *state we actually need* (the
+# container exists, and postCreateCommand has written its marker), then stop
+# waiting and reclaim the CLI process.
 dc::up() {
-  local wt="$1" cfg="$2" outf rc cid
+  local wt="$1" cfg="$2" outf rc=0 cid waited=0 cli_pid
   outf="$(mktemp)"
   dc::prepull_image
 
@@ -382,31 +400,53 @@ dc::up() {
   [ -n "$share" ] && args+=(--mount "$share")
 
   set +e
-  timeout "$WTDC_BUILD_TIMEOUT" devcontainer "${args[@]}" >"$outf"
-  rc=$?
+  devcontainer "${args[@]}" >"$outf" 2>&1 &
+  cli_pid=$!
+
+  while [ "$waited" -lt "$WTDC_BUILD_TIMEOUT" ]; do
+    cid="$(dc::container_for "$wt")"
+    if [ -n "$cid" ] && dc::postcreate_done "$cid"; then
+      break
+    fi
+    if ! kill -0 "$cli_pid" 2>/dev/null; then
+      wait "$cli_pid"
+      rc=$?
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  # Whatever state we reached, do not leave the CLI holding the container.
+  if kill -0 "$cli_pid" 2>/dev/null; then
+    wtdc::detail "devcontainer CLI is still holding the container; detaching it"
+    # Only the CLI. The `docker run` it spawned is how the container stays
+    # alive, exactly as an editor client would leave it, so killing the whole
+    # process group would take the container's stdio with it.
+    kill -TERM "$cli_pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$cli_pid" 2>/dev/null || true
+  fi
   set -e
 
-  if [ "$rc" -ne 0 ]; then
-    if [ -s "$outf" ]; then
-      printf '\n'
-      cat "$outf"
-    fi
+  # stdout and stderr share the file, so the payload is the last line that
+  # actually parses as JSON. Anything else would make jq fail and, under
+  # set -e, kill the script with no message at all.
+  local payload
+  payload="$(grep -E '^\{' "$outf" 2>/dev/null | tail -1 || true)"
+  cid="$(printf '%s' "$payload" | jq -r '.containerId // empty' 2>/dev/null || true)"
+  [ -n "$cid" ] || cid="$(dc::container_for "$wt" || true)"
+
+  if [ -z "$cid" ]; then
+    [ -s "$outf" ] && { printf '\n'; cat "$outf"; }
     rm -f "$outf"
-    if [ "$rc" -eq 124 ]; then
-      wtdc::die "devcontainer up timed out after ${WTDC_BUILD_TIMEOUT}s"
-    fi
-    wtdc::die "devcontainer up failed (exit $rc)"
+    wtdc::die "devcontainer up did not produce a container"
   fi
 
-  cid="$(jq -r '.containerId // empty' "$outf" 2>/dev/null | tail -1)"
-  if [ -z "$cid" ]; then
-    cid="$(dc::container_for "$wt")"
-  fi
   local remote_ws
-  remote_ws="$(jq -r '.remoteWorkspaceFolder // empty' "$outf" 2>/dev/null | tail -1)"
+  remote_ws="$(printf '%s' "$payload" | jq -r '.remoteWorkspaceFolder // empty' 2>/dev/null || true)"
   rm -f "$outf"
 
-  [ -n "$cid" ] || wtdc::die "devcontainer up succeeded but no container id could be determined"
   printf '%s' "$cid"
   [ -n "$remote_ws" ] && printf '\n%s' "$remote_ws"
   return 0
