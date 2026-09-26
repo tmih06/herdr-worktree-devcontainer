@@ -72,7 +72,10 @@ ask() {
   toggle=' '
   while :; do
     render "$toggle"
-    if ! IFS= read -rsn1 -t 600 ch; then
+    # -N, not -n: -n stops at the newline delimiter, and the tty maps CR to NL
+    # on input, so `read -n 1` swallows Enter as an empty line and every
+    # escape sequence breaks on its first byte. -N reads exactly one byte.
+    if ! IFS= read -rsN1 -t 600 ch; then
       render "$toggle"
       restore_tty
       return 1
@@ -81,9 +84,28 @@ ask() {
       $'\n'|$'\r') restore_tty; return 0 ;;
       y|Y)         restore_tty; return 0 ;;
       n|N|q|Q)     restore_tty; return 1 ;;
-      $'\033')     restore_tty; return 1 ;;
-      ' ')         [ "$toggle" = ' ' ] && toggle='x' || toggle=' ' ;;
-      *)           : ;;
+      $'\033')
+        # An arrow key sends ESC [ A/B/C/D. Reading one byte leaves a bare ESC,
+        # which would be mistaken for pressing Esc and silently decline, so
+        # drain the rest of the sequence and only treat ESC as Esc when
+        # nothing follows it.
+        seq=""
+        local i
+        for i in 1 2 3; do
+          local more
+          # The rest of the sequence is normally already buffered, so this
+          # returns instantly; the window only bounds how long a deliberate
+          # bare Esc waits before it counts as "decline".
+          IFS= read -rsN1 -t 0.1 more || break
+          seq="$seq$more"
+        done
+        if [ -z "$seq" ]; then
+          restore_tty
+          return 1
+        fi
+        ;;
+      ' ') [ "$toggle" = ' ' ] && toggle='x' || toggle=' ' ;;
+      *)       : ;;
     esac
   done
 }

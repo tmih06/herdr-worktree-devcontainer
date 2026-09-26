@@ -210,6 +210,7 @@ wiring.
 ```sh
 bash bin/wtdc selftest     # pure logic: JSONC, merge, state, ssh projection
 bash tests/e2e.sh          # full provision/teardown/hooks vs stubbed host tools
+bash tests/prompt-keys.sh  # prompt overlay key handling, driven through a real pty
 bash tests/real-e2e.sh     # a real container, real sshd, real saved machine
 ```
 
