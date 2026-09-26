@@ -203,6 +203,34 @@ workspace is opened inside the container rooted at its remote workspace
 folder. Workspaces, panes and agents on that machine belong to the container's
 own Herdr server and survive your host Herdr restarting.
 
+## Speed
+
+Measured on a fresh worktree with the image already pulled, full provision
+including the saved machine:
+
+| Setup | Time |
+|---|---|
+| Building a per-worktree image (sshd feature) | 1m25s |
+| Prebuilt image | **3.9s** |
+
+The difference is structural, not tuning. A `devcontainer.json` that declares
+any `features` makes the Dev Container CLI derive a **per-workspace image**, so
+every new worktree pays for a build. A config with no features is just
+`docker run`. The prebuilt templates bake in sshd and herdr so the generated
+config needs no features at all.
+
+Using one costs you the features in your own `devcontainer.json` — the plugin
+warns and names them rather than dropping them silently:
+
+```
+warn: using prebuilt image ghcr.io/...-base:latest, so these features are not
+      applied: ghcr.io/devcontainers/features/node:1
+```
+
+Two caveats on the number: the first provision of a template also pays the
+image pull, and `WTDC_TEMPLATE=node` is not the same as a feature-configured
+repo — pick the template that matches what your features were giving you.
+
 ## Cleanup
 
 `herdr worktree remove` fires `worktree.removed`, which removes the saved

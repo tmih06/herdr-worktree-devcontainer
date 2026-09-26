@@ -107,9 +107,15 @@ dc::build_merged() {
         (
           [
             (.postCreateCommand // null | as_cmd_string),
-            # postCreateCommand runs as the devcontainer remoteUser, which is not
-            # the USER of the image (that is often root). Record who we
-            # actually provisioned so the SSH login matches that account.
+            # A prebuilt image has no sshd *feature*, and the devcontainer CLI
+            # overrides the image ENTRYPOINT with /bin/sh, so an ENTRYPOINT that
+            # starts sshd never runs. Start it here instead. The guard keeps
+            # this harmless on the feature path, where sshd is already up.
+            ("(command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ])"
+             + " && (pgrep -x sshd >/dev/null 2>&1"
+             + " || sudo -n /usr/sbin/sshd)"
+             + " || echo \"WTDC: sshd is installed but could not be started;"
+             + " check NOPASSWD sudo for the container user\""),
             ("id -un > /tmp/wtdc-user"
              + " && mkdir -p \"$HOME/.ssh\""
              + " && echo \"" + $pubkey + "\""
