@@ -4,8 +4,11 @@ name: images
 #
 # Why this exists: a devcontainer.json that declares `features` makes the
 # devcontainer CLI derive a per-workspace image, so every new worktree pays for
-# an image build. These images have no features, so `devcontainer up` is just
+# an image build. These images declare no features, so `devcontainer up` is just
 # `docker run` and a provision is a few seconds instead of half a minute.
+#
+# Shape: base builds first on its own, because every other template is FROM it
+# and needs it published. The rest then build in parallel.
 
 on:
   push:
@@ -32,14 +35,14 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # Validate before building: a broken manifest should fail in seconds, not
-  # after a base image has been through a full build.
+  # Validate and shape the build before anything expensive runs: a broken
+  # manifest should fail in seconds, not after a full base build.
   plan:
     name: plan
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      base_ref: ${{ steps.plan.outputs.base_ref }}
+      base: ${{ steps.plan.outputs.base }}
+      derived: ${{ steps.plan.outputs.derived }}
     steps:
       - uses: actions/checkout@v4
       - id: plan
@@ -50,79 +53,95 @@ jobs:
           registry=$(jq -r .registry images/manifest.json)
           prefix=$(jq -r .prefix images/manifest.json)
 
-          # base must build first: the others are FROM it.
-          names=$(jq -r '[.images[] | select(.base == null) | .name] | join(",")' images/manifest.json)
-          [ -n "$names" ] || { echo "no base image in the manifest" >&2; exit 1; }
-
-          json=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
-            .images
-            | map(. + {ref: ($reg + "/" + $pre + "-" + .name + ":" + $tag)})
-            | {include: map(.name), matrix: {
-                include: map({name, dir, ref, base_ref:
-                  (if .base then ($reg + "/" + $pre + "-" + .base + ":" + $tag) else null end)})
-              }}
+          base=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
+            .images | map(select(.base == null))
+            | if length != 1 then error("expected exactly one template with no base, found \(length)")
+              else .[0] | {name, dir, ref: ($reg + "/" + $pre + "-" + .name + ":" + $tag)} end
           ' images/manifest.json)
-          echo "matrix=$json" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$(jq -r '.matrix.include[] | select(.base_ref == null) | .ref' <<<"$json")" >> "$GITHUB_OUTPUT"
-          jq -r '.matrix.include[] | "  \(.name) -> \(.ref)"' <<<"$json"
 
-  build:
-    name: build ${{ matrix.name }}
+          derived=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
+            .images | map(select(.base != null))
+            | {include: map({name, dir,
+                ref: ($reg + "/" + $pre + "-" + .name + ":" + $tag),
+                base_ref: ($reg + "/" + $pre + "-" + .base + ":" + $tag)})}
+          ' images/manifest.json)
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "derived=$derived" >> "$GITHUB_OUTPUT"
+
+          echo "base:  $(jq -r .ref <<<"$base")"
+          jq -r '.include[] | "derive: \(.ref)  (from \(.base_ref))"' <<<"$derived"
+
+  build-base:
+    name: build base
     needs: plan
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      # base is a dependency of the others, so it must not run beside them.
-      fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-buildx-action@v3
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull the base image
-        if: matrix.base_ref != ''
+      - name: Build and push base
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.dir }}
-          build-args: |
-            BASE_IMAGE=${{ matrix.base_ref }}
-          push: false
-          load: true
-          tags: local/${{ matrix.name }}:ci
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          context: ${{ fromJson(needs.plan.outputs.base).dir }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ fromJson(needs.plan.outputs.base).ref }}
+          provenance: false
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,mode=max,scope=base
 
+  build:
+    name: build ${{ matrix.name }}
+    needs: [plan, build-base]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.derived) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.dir }}
           build-args: |
-            BASE_IMAGE=${{ matrix.base_ref || needs.plan.outputs.base_ref }}
+            BASE_IMAGE=${{ matrix.base_ref }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ matrix.ref }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.name }}:ci
+          tags: ${{ matrix.ref }}
           provenance: false
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
   verify:
     name: verify
-    needs: build
+    needs: [plan, build-base, build]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Every template is pullable and runs herdr
         run: |
           set -euo pipefail
