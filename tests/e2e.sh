@@ -88,9 +88,9 @@ case "$1" in
     # $1 is the container id; the rest is the command.
     shift
     case "$*" in
-      *"cat /tmp/wtdc-user"*) echo vscode ;;
-      *"getent passwd"*)      echo "vscode:x:1000:1000::/home/vscode:/bin/bash" ;;
-      *"id -un"*)             echo vscode ;;
+      *"cat /tmp/wtdc-user"*) echo devuser ;;
+      *"getent passwd"*)      echo "devuser:x:1000:1000::/home/devuser:/bin/bash" ;;
+      *"id -un"*)             echo devuser ;;
       *"--version"*)          echo "herdr 0.9.1" ;;
       *"status server"*)      echo "server: running" ;;
       *)                      : ;;
@@ -120,7 +120,7 @@ echo "devcontainer $sub starting" >&2
 if [ ! -f "$cfg" ]; then echo "no config at $cfg" >&2; exit 1; fi
 grep -q "sshd" "$cfg" || { echo "merged config is missing the sshd feature" >&2; exit 1; }
 echo "devcontainer up complete" >&2
-printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"vscode"}'
+printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"devuser"}'
 STUB
 
 cat >"$BIN/ssh" <<'STUB'
@@ -192,7 +192,7 @@ expect 'ssh host recorded' '127.0.0.1' \
   "$(jq -r '.entries["'"$WT"'"].ssh_host' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect 'ssh port recorded' '49154' \
   "$(jq -r '.entries["'"$WT"'"].ssh_port' "$HERDR_PLUGIN_STATE_DIR/state.json")"
-expect 'ssh user recorded' 'vscode' \
+expect 'ssh user recorded' 'devuser' \
   "$(jq -r '.entries["'"$WT"'"].ssh_user' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect 'machine id recorded' 'm1' \
   "$(jq -r '.entries["'"$WT"'"].machine_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"

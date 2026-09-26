@@ -52,10 +52,10 @@ git -C "$REPO" config user.name t
 mkdir -p "$REPO/.devcontainer"
 cat >"$REPO/.devcontainer/devcontainer.json" <<'JSON'
 {
-  // minimal but real: a small image with the sshd feature added by the plugin
+  // No remoteUser on purpose: the plugin must discover which account it
+  // provisioned rather than assuming any particular image's default user.
   "name": "wtdc-real",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "remoteUser": "vscode",
   "postCreateCommand": "echo upstream-post-create-ran"
 }
 JSON

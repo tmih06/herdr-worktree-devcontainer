@@ -485,8 +485,8 @@ JSONC
   fi
 
   printf 'state store\n'
-  state::set "/tmp/wt-a" '{"label":"devc-a","ssh_alias":"herdr-devc-a","ssh_host":"127.0.0.1","ssh_port":"32771","ssh_user":"vscode","container_id":"abc"}'
-  state::set "/tmp/wt-b" '{"label":"devc-b","ssh_alias":"herdr-devc-b","ssh_host":"127.0.0.1","ssh_port":"32772","ssh_user":"vscode","container_id":"def"}'
+  state::set "/tmp/wt-a" '{"label":"devc-a","ssh_alias":"herdr-devc-a","ssh_host":"127.0.0.1","ssh_port":"32771","ssh_user":"devuser","container_id":"abc"}'
+  state::set "/tmp/wt-b" '{"label":"devc-b","ssh_alias":"herdr-devc-b","ssh_host":"127.0.0.1","ssh_port":"32772","ssh_user":"devuser","container_id":"def"}'
   check 'lookup by path' 'devc-a' "$(state::get "/tmp/wt-a" | jq -r '.label')"
   check 'lookup by container' '/tmp/wt-b' "$(state::find_by_container "def" | jq -r '.checkout_path')"
   check 'list count' '2' "$(state::list | wc -l | tr -d ' ')"
@@ -506,7 +506,7 @@ JSONC
   check 'host block written' '1' "$(grep -c '^Host herdr-devc-b$' "$managed")"
   check 'port from state' 'Port 32772' \
     "$(grep -A3 '^Host herdr-devc-b$' "$managed" | grep '^  Port ' | sed 's/^ *//')"
-  check 'user from state' 'User vscode' \
+  check 'user from state' 'User devuser' \
     "$(grep -A3 '^Host herdr-devc-b$' "$managed" | grep '^  User ' | sed 's/^ *//')"
   state::del "/tmp/wt-b"
   remote::rewrite_ssh_config

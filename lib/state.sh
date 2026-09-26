@@ -7,7 +7,7 @@
 #       "/home/me/.herdr/worktrees/feat": {
 #         "label": "devc-feat", "slug": "feat", "container_id": "abc",
 #         "ssh_alias": "herdr-devc-feat", "ssh_host": "127.0.0.1",
-#         "ssh_port": "32771", "ssh_user": "vscode",
+#         "ssh_port": "32771", "ssh_user": "devuser",
 #         "endpoint_kind": "published-port",
 #         "remote_workspace": "/workspaces/feat", "machine_id": "m3",
 #         "merged_config": "/.../herdr-devcontainer.json",

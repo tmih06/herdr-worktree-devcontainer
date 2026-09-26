@@ -118,13 +118,13 @@ only become a saved machine if it runs an SSH server, which is why the plugin
 injects the `sshd` devcontainer feature into your config. That feature listens
 on **2222**, not 22, which is why `WTDC_SSH_PORT` defaults to 2222.
 
-**`devcontainer up` ignores `forwardPorts`.** Port forwarding is a VS Code
-client feature; the standalone CLI has no forwarding daemon. So the port is
-published with `runArgs: ["--publish", "127.0.0.1::2222"]`, which asks Docker for
-a free loopback port. The plugin reads the real port back with `docker port`. If
-your config uses `dockerComposeFile`, `runArgs` does not apply and the plugin
-says so instead of failing silently — publish the port in your compose file, or
-use `WTDC_EXTRA_MOUNTS`.
+**`devcontainer up` ignores `forwardPorts`.** Forwarding is implemented by
+editor clients; the Dev Container CLI itself has no forwarding daemon. So the
+port is published with `runArgs: ["--publish", "127.0.0.1::2222"]`, which asks
+Docker for a free loopback port. The plugin reads the real port back with
+`docker port`. If your config uses `dockerComposeFile`, `runArgs` does not
+apply and the plugin says so instead of failing silently — publish the port in
+your compose file, or use `WTDC_EXTRA_MOUNTS`.
 
 **Background SSH never answers a prompt.** Herdr's machine connections do not
 ask for passwords, so the container gets a dedicated keypair instead. The
