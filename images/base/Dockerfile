@@ -38,13 +38,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the plugin discovers whichever user postCreateCommand ran as rather than
 # assuming a name, so this is only a default.
 ARG USER_NAME=dev
-ARG USER_UID=1000
-ARG USER_GID=1000
 
-RUN groupadd -g ${USER_GID} ${USER_NAME} 2>/dev/null || true \
- && useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/bash ${USER_NAME} \
- && mkdir -p /workspaces && chown ${USER_UID}:${USER_GID} /workspaces \
- && echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USER_NAME}
+# No fixed uid: ubuntu:24.04 already ships a `ubuntu` user at 1000, so
+# hardcoding 1000 fails the build. Let useradd pick the next free one.
+RUN set -eux; \
+    groupadd "${USER_NAME}"; \
+    useradd -m -g "${USER_NAME}" -s /bin/bash "${USER_NAME}"; \
+    mkdir -p /workspaces; \
+    chown "${USER_NAME}:${USER_NAME}" /workspaces; \
+    printf '%s\n' "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${USER_NAME}"; \
+    chmod 0440 "/etc/sudoers.d/90-${USER_NAME}"
 
 # sshd: key-only, root allowed, host keys generated now rather than on boot.
 RUN mkdir -p /var/run/sshd /etc/ssh \
@@ -64,9 +67,14 @@ RUN chmod +x /usr/local/share/ssh-init.sh
 
 # herdr, baked in. The plugin bind mounts a host copy when it can and only
 # falls back to installing when this is absent.
+#
+# Installed as the workspace user via su, so the installer writes into that
+# user's home; running it as root would put the binary in /root and the copy
+# below would find nothing.
 RUN set -eux; \
     curl -fsSL https://herdr.dev/install.sh -o /tmp/herdr-install.sh; \
-    USER_NAME=${USER_NAME} sh /tmp/herdr-install.sh; \
+    chmod +x /tmp/herdr-install.sh; \
+    su -s /bin/sh "${USER_NAME}" -c 'sh /tmp/herdr-install.sh'; \
     rm -f /tmp/herdr-install.sh; \
     cp "/home/${USER_NAME}/.local/bin/herdr" /usr/local/bin/herdr; \
     chmod 0755 /usr/local/bin/herdr; \
