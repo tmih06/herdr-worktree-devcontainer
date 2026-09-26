@@ -165,6 +165,14 @@ if [ "$1" = "machine" ] && [ "$2" = "remove" ]; then
   echo "removed" >"$WTDC_FAKE_STATE/machine_removed"
   exit 0
 fi
+# Herdr accepts `--machine <id>` in front of the subcommand, so match on the
+# subcommand pair rather than a fixed position.
+args=" $* "
+case "$args" in
+  *" workspace create "*)
+    echo '{"result":{"workspace":{"workspace_id":"wr1"}}}'
+    exit 0 ;;
+esac
 exit 0
 STUB
 
@@ -212,6 +220,18 @@ expect 'machine id recorded' 'm1' \
 expect 'remote workspace recorded' '/workspaces/demo' \
   "$(jq -r '.entries["'"$WT"'"].remote_workspace' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect 'machine label derived' 'devc-demo' "$(cat "$WTDC_FAKE_STATE/machine_label")"
+
+step "handing the user over to the container"
+calls="$(cat "$WTDC_FAKE_STATE/herdr_calls")"
+expect_contains 'workspace created on the machine' '--machine m1 workspace create' "$calls"
+expect 'remote workspace id recorded' 'wr1' \
+  "$(jq -r '.entries["'"$WT"'"].remote_workspace_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+expect_contains 'container workspace focused' '--machine m1 workspace focus wr1' "$calls"
+expect_contains 'host workspace closed' 'workspace close w9' "$calls"
+expect 'focus happens before the host workspace closes' 'yes' \
+  "$(printf '%s' "$calls" | awk '/workspace focus/{f=NR} /workspace close/{c=NR} END{print (f && c && f<c) ? "yes" : "no"}')"
+expect_contains 'completion announced' 'notification show Dev container ready' "$calls"
+expect_contains 'completion used the done sound' '--sound done' "$calls"
 
 step "merged devcontainer config on disk"
 merged="$(jq -r --arg k "$WT" '.entries[$k].merged_config' "$HERDR_PLUGIN_STATE_DIR/state.json")"

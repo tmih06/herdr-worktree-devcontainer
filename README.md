@@ -62,6 +62,31 @@ Create a worktree the way you normally do (`prefix+shift+g`, or
 
 Answer yes and a new tab opens in that workspace and streams
 `devcontainer up`, so you watch the image build where you created the worktree.
+The build takes minutes, so the plugin raises a Herdr notification with a sound
+when it finishes — and a different one if it fails.
+
+### Where you end up
+
+When the container is ready the plugin hands you over:
+
+1. it creates a workspace **on the container's machine**, rooted at the
+   container's workspace folder,
+2. focuses it, so your view switches to the container,
+3. closes the host worktree workspace, because it would otherwise keep
+   spawning host shells and look like a valid place to work.
+
+From then on every terminal you open for that worktree runs inside the
+container. The host checkout is untouched on disk and still reachable from an
+editor or a plain shell; it just is not a Herdr workspace any more.
+
+Set `WTDC_CLOSE_HOST_WORKSPACE=0` to keep it, or `WTDC_FOCUS_REMOTE=0` to stay
+where you are and pick the container in the sidebar yourself.
+
+> Herdr cannot re-point a workspace's panes at a container. Panes always spawn
+> your `$SHELL`, and the only shell override in the config is
+> `terminal.default_shell`, which is global. That is why the container gets its
+> own workspace and the host one is closed, rather than the host workspace
+> being converted.
 
 ### Actions
 
@@ -101,6 +126,9 @@ WTDC_ON_CREATE=auto bash bin/wtdc hook-created
 | `WTDC_CONTAINER_INSTALL` | herdr install script | run in the container's `postCreateCommand` |
 | `WTDC_REMOTE_SESSION` | *(empty)* | named Herdr session inside the container |
 | `WTDC_OPEN_REMOTE_WORKSPACE` | `1` | open a workspace in the container after connecting |
+| `WTDC_FOCUS_REMOTE` | `1` | focus the container workspace when it is ready |
+| `WTDC_CLOSE_HOST_WORKSPACE` | `1` | close the host worktree workspace once the container is up |
+| `WTDC_NOTIFY` | `1` | notify when the build finishes or fails |
 | `WTDC_READY_TIMEOUT` | `180` | seconds to wait for sshd and the container herdr server |
 | `WTDC_BUILD_TIMEOUT` | `1800` | seconds to wait for `devcontainer up` |
 | `WTDC_KEEP_CONTAINER` | `0` | keep the container when the worktree is removed |

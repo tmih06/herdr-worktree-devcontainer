@@ -93,6 +93,12 @@ do_provision() {
   local checkout="$1" workspace="${2:-}" label="${3:-}"
   [ -n "$label" ] || label="$(basename "$checkout")"
 
+  # A build can fail long after the user stopped watching. wtdc::die exits, so
+  # announce the failure from a trap; the success path clears it.
+  WTDC_PROVISION_LABEL="$label"
+  trap 'wtdc::notify "Dev container failed: ${WTDC_PROVISION_LABEL:-worktree}" \
+    "the build tab has the error" request' EXIT
+
   require_config "$checkout"
 
   local slug src merged pubkey
@@ -210,12 +216,37 @@ $(remote::container_herdr_install_log "$cid" | sed 's/^/     /')
     '.entries[$k].machine_id = $mid | .entries[$k].machine_label = $mlabel' \
     --arg k "$checkout" --arg mid "$machine_id" --arg mlabel "$machine_label"
 
-  remote::open_remote_workspace "$machine_id" "$remote_ws" "$machine_label"
+  local remote_ws_id
+  remote_ws_id="$(remote::open_remote_workspace "$machine_id" "$remote_ws" "$machine_label")"
+  state::patch "$checkout" '.entries[$k].remote_workspace_id = $rwsid' \
+    --arg k "$checkout" --arg rwsid "$remote_ws_id"
 
   printf '\n'
   wtdc::ok "$label is running in a dev container"
-  wtdc::detail "switch to machine '$machine_label' in the sidebar to work inside it"
-  wtdc::detail "remote workspace: ${remote_ws:-<default>}"
+  wtdc::detail "machine:       $machine_label"
+  wtdc::detail "workspace:     ${remote_ws:-<default>}"
+
+  # Focus first, then drop the host workspace. Closing the focused workspace
+  # moves the client somewhere arbitrary, so land on the container beforehand.
+  if [ "$WTDC_FOCUS_REMOTE" = "1" ] && [ -n "$remote_ws_id" ]; then
+    if remote::focus_remote_workspace "$machine_id" "$remote_ws_id"; then
+      wtdc::ok "focused the container workspace"
+    else
+      wtdc::warn "could not focus the container workspace; select '$machine_label' in the sidebar"
+    fi
+  fi
+
+  if [ "$WTDC_CLOSE_HOST_WORKSPACE" = "1" ] && [ -n "$workspace" ]; then
+    if remote::close_workspace "$workspace"; then
+      wtdc::ok "closed the host workspace $workspace; new terminals now open in the container"
+    else
+      wtdc::warn "could not close the host workspace $workspace (herdr refused)"
+    fi
+  fi
+
+  wtdc::notify "Dev container ready: $label" \
+    "$machine_label is live and focused. Start coding." done
+  trap - EXIT
 }
 
 # ---------------------------------------------------------------- teardown

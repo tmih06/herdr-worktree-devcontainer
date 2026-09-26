@@ -63,8 +63,18 @@ git -C "$REPO" add -A
 git -C "$REPO" commit -qm init
 git -C "$REPO" worktree add -q -b real "$WT"
 
+# A real host workspace, so the "close the host workspace once the container is
+# up" behaviour is checked against herdr rather than a stub.
+HOST_WS="$(herdr workspace create --cwd "$WT" --label wtdc-real-host --no-focus 2>/dev/null |
+  jq -r '.result.workspace.workspace_id // empty')"
+if [ -z "$HOST_WS" ]; then
+  echo "could not create a host workspace; skipping" >&2
+  exit 2
+fi
+echo "==> host workspace $HOST_WS"
+
 echo "==> provisioning $WT (this builds a real image, be patient)"
-"$PLUGIN_ROOT/bin/wtdc" provision "$WT" "" real
+"$PLUGIN_ROOT/bin/wtdc" provision "$WT" "$HOST_WS" real
 rc=$?
 [ "$rc" -eq 0 ] || { echo "provision failed: $rc"; exit "$rc"; }
 
@@ -99,6 +109,17 @@ check 'remote command through the machine' 'yes' \
 check 'remote workspace opened in the container' 'yes' \
   "$(herdr --machine "$MACHINE_ID" workspace list 2>/dev/null | jq -e '(.result.workspaces // []) | length > 0' >/dev/null && echo yes || echo no)"
 
+echo
+echo "==> the user was handed over to the container"
+check 'host workspace is gone' 'no' \
+  "$(herdr workspace list 2>/dev/null | jq -e --arg w "$HOST_WS" \
+     '[.result.workspaces[]? | select(.workspace_id == $w)] | length > 0' >/dev/null && echo yes || echo no)"
+check 'a container workspace is focused on the machine' 'yes' \
+  "$(herdr --machine "$MACHINE_ID" workspace list 2>/dev/null | jq -e \
+     '[(.result.workspaces // [])[] | select(.focused == true)] | length > 0' >/dev/null && echo yes || echo no)"
+check 'remote workspace id recorded in state' 'yes' \
+  "$([ -n "$(jq -r --arg k "$WT" '.entries[$k].remote_workspace_id // empty' \
+       "$HERDR_PLUGIN_STATE_DIR/state.json")" ] && echo yes || echo no)"
 echo
 echo "==> teardown"
 

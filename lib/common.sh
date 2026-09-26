@@ -50,8 +50,20 @@ wtdc::detail() {
 
 # Always call Herdr through HERDR_BIN_PATH: it is the running binary and works
 # across the Unix socket / Windows named pipe difference.
+
 wtdc::herdr() {
   "${HERDR_BIN_PATH:-herdr}" "$@"
+}
+
+# A dev container build takes minutes. Without a notification the only signal
+# is a tab the user has to go and look at, so say so when it is done.
+wtdc::notify() {
+  local title="$1" body="${2:-}" sound="${3:-done}"
+  [ "${WTDC_NOTIFY:-1}" = "1" ] || return 0
+  local args=(notification show "$title" --sound "$sound")
+  [ -n "$body" ] && args+=(--body "$body")
+  wtdc::herdr "${args[@]}" >/dev/null 2>&1 || true
+  return 0
 }
 
 wtdc::need() {
@@ -108,6 +120,9 @@ wtdc::load_config() {
   : "${WTDC_CONTAINER_INSTALL:=}"
   : "${WTDC_REMOTE_SESSION:=}"
   : "${WTDC_OPEN_REMOTE_WORKSPACE:=1}"
+  : "${WTDC_FOCUS_REMOTE:=1}"
+  : "${WTDC_CLOSE_HOST_WORKSPACE:=1}"
+  : "${WTDC_NOTIFY:=1}"
   : "${WTDC_READY_TIMEOUT:=180}"
   : "${WTDC_BUILD_TIMEOUT:=1800}"
   : "${WTDC_KEEP_CONTAINER:=0}"
@@ -117,6 +132,7 @@ wtdc::load_config() {
 
   export WTDC_ENABLED WTDC_ON_CREATE WTDC_SSH_FEATURE WTDC_SSH_PORT \
     WTDC_CONTAINER_INSTALL WTDC_REMOTE_SESSION WTDC_OPEN_REMOTE_WORKSPACE \
+    WTDC_FOCUS_REMOTE WTDC_CLOSE_HOST_WORKSPACE WTDC_NOTIFY \
     WTDC_READY_TIMEOUT WTDC_BUILD_TIMEOUT WTDC_KEEP_CONTAINER \
     WTDC_EXTRA_MOUNTS WTDC_CONFIG_CANDIDATES WTDC_MACHINE_LABEL_PREFIX
 }

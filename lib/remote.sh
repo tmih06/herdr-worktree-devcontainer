@@ -266,10 +266,31 @@ remote::remove_machine() {
   wtdc::herdr machine remove "$id" >/dev/null 2>&1 || true
 }
 
+# Creates the in-container workspace and echoes its id, so the caller can focus
+# it. Workspaces live on the machine that owns them, so this is what makes new
+# terminals there open inside the container.
 remote::open_remote_workspace() {
-  local machine_id="$1" cwd="$2" label="$3"
+  local machine_id="$1" cwd="$2" label="$3" out
   [ "$WTDC_OPEN_REMOTE_WORKSPACE" = "1" ] || return 0
   [ -n "$machine_id" ] && [ -n "$cwd" ] || return 0
-  wtdc::herdr --machine "$machine_id" workspace create \
-    --cwd "$cwd" --label "$label" --no-focus >/dev/null 2>&1 || true
+  out="$(wtdc::herdr --machine "$machine_id" workspace create \
+    --cwd "$cwd" --label "$label" --no-focus 2>/dev/null)" || return 0
+  printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null
+}
+
+# Herdr renders one client against a selected machine, so focusing a workspace
+# on a saved machine is how the user lands inside the container.
+remote::focus_remote_workspace() {
+  local machine_id="$1" workspace_id="$2"
+  [ -n "$machine_id" ] && [ -n "$workspace_id" ] || return 1
+  wtdc::herdr --machine "$machine_id" workspace focus "$workspace_id" >/dev/null 2>&1
+}
+
+# The host worktree workspace keeps spawning host shells, which is the one
+# thing that makes it look like a valid place to work. Close it so the
+# container's workspace is the only workspace for that worktree.
+remote::close_workspace() {
+  local workspace_id="$1"
+  [ -n "$workspace_id" ] || return 1
+  wtdc::herdr workspace close "$workspace_id" >/dev/null 2>&1
 }
