@@ -56,8 +56,15 @@ ARG USER_NAME=dev
 # no-op on a uid-1000 host, and still correct on any other host, where it can
 # now actually do its job.
 RUN set -eux; \
-    if getent passwd 1000 >/dev/null; then \
-      usermod -l "${USER_NAME}" -d "/home/${USER_NAME}" -m "$(getent passwd 1000 | cut -d: -f1)"; \
+    # Delete rather than rename: the stock user has no home directory in this
+    # minimal image, so `usermod -m` has nothing to move and fails.
+    squatter="$(getent passwd 1000 | cut -d: -f1 || true)"; \
+    if [ -n "$squatter" ] && [ "$squatter" != "${USER_NAME}" ]; then \
+      userdel -r "$squatter" 2>/dev/null || userdel "$squatter" 2>/dev/null || true; \
+    fi; \
+    oldgroup="$(getent group 1000 | cut -d: -f1 || true)"; \
+    if [ -n "$oldgroup" ] && [ "$oldgroup" != "${USER_NAME}" ]; then \
+      groupdel "$oldgroup" 2>/dev/null || true; \
     fi; \
     getent group 1000 >/dev/null || groupadd -g 1000 "${USER_NAME}"; \
     id -u "${USER_NAME}" >/dev/null 2>&1 || \
