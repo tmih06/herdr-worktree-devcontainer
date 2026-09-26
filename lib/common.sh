@@ -9,6 +9,14 @@ WTDC_COMMON_SH_LOADED=1
 
 WTDC_ROOT="${HERDR_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# Herdr injects these when it runs a plugin command. Fall back to the same
+# locations it uses, so `bin/wtdc provision <path>` also works from a plain
+# shell instead of failing on a missing state dir.
+: "${HERDR_PLUGIN_ID:=worktree-devcontainer}"
+: "${HERDR_PLUGIN_STATE_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$HERDR_PLUGIN_ID}"
+: "${HERDR_PLUGIN_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/herdr/plugins/config/$HERDR_PLUGIN_ID}"
+export HERDR_PLUGIN_ID HERDR_PLUGIN_STATE_DIR HERDR_PLUGIN_CONFIG_DIR
+
 # Colours only when stderr/stdout is a terminal, so hook logs stay readable.
 if [ -t 1 ]; then
   WTDC_C_RESET=$'\033[0m'

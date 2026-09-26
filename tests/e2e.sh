@@ -345,6 +345,22 @@ HERDR_PLUGIN_EVENT_JSON="$(event_for w10 "$WT2" second "$REPO")" \
 expect 'already-provisioned worktree is not re-prompted' '0' \
   "$(grep -c 'pane open' "$WTDC_FAKE_STATE/herdr_calls" || true)"
 
+step "a failed provisioning stays retryable"
+WT5="$SANDBOX/worktrees/retry"
+git -C "$REPO" worktree add -q -b retry "$WT5" 2>/dev/null
+rm -f "$WT5/.devcontainer/devcontainer.json"
+rm -f "$WTDC_FAKE_STATE/container"
+"$PLUGIN_ROOT/bin/wtdc" provision "$WT5" w13 retry >/dev/null 2>&1
+expect 'provisioning failed' '1' "$?"
+expect 'no state entry left behind' 'no' \
+  "$(jq -r --arg k "$WT5" '.entries[$k] // "no"' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+reset_herdr_calls
+cp "$WT/.devcontainer/devcontainer.json" "$WT5/.devcontainer/devcontainer.json"
+HERDR_PLUGIN_EVENT_JSON="$(event_for w13 "$WT5" retry "$REPO")" \
+  "$PLUGIN_ROOT/bin/wtdc" hook-created
+expect_contains 'the prompt is offered again after a failure' '--entrypoint prompt' \
+  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
+rm -f "$WT5/.devcontainer/devcontainer.json"
 step "WTDC_ON_CREATE=auto skips the question"
 reset_herdr_calls
 git -C "$REPO" worktree add -q -b third "$SANDBOX/worktrees/third" 2>/dev/null

@@ -87,17 +87,31 @@ require_config() {
     wtdc::die "no devcontainer config in $checkout (looked for: $WTDC_CONFIG_CANDIDATES)"
 }
 
+# Runs on any exit from do_provision that is not the success path.
+wtdc::provision_failed() {
+  local checkout="${WTDC_PROVISION_CHECKOUT:-}"
+  if [ -n "$checkout" ] && state::has "$checkout"; then
+    state::del "$checkout"
+    wtdc::info "cleared the failed attempt; the prompt will offer again"
+  fi
+  wtdc::notify "Dev container failed: ${WTDC_PROVISION_LABEL:-worktree}" \
+    "the build tab has the error. Retry: $WTDC_ROOT/bin/wtdc provision ${checkout:-<path>}" request
+}
+
 # ---------------------------------------------------------------- provision
 
 do_provision() {
   local checkout="$1" workspace="${2:-}" label="${3:-}"
   [ -n "$label" ] || label="$(basename "$checkout")"
 
-  # A build can fail long after the user stopped watching. wtdc::die exits, so
-  # announce the failure from a trap; the success path clears it.
+  # A build can fail long after the user stopped watching, and wtdc::die exits.
+  # Announce the failure from a trap, and drop the state entry we are about to
+  # write: hook_created skips worktrees that already have one, so leaving a
+  # half-written entry behind would silently stop the prompt from ever
+  # appearing again for this worktree. The success path clears the trap.
   WTDC_PROVISION_LABEL="$label"
-  trap 'wtdc::notify "Dev container failed: ${WTDC_PROVISION_LABEL:-worktree}" \
-    "the build tab has the error" request' EXIT
+  WTDC_PROVISION_CHECKOUT="$checkout"
+  trap 'wtdc::provision_failed' EXIT
 
   require_config "$checkout"
 
