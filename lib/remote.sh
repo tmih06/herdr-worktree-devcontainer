@@ -73,6 +73,36 @@ remote::ensure_include() {
 remote::rewrite_ssh_config() {
   local file
   file="$(remote::ssh_managed_file)"
+
+  # The drop-in is a whole-file projection of state, so regenerating it from a
+  # different state dir silently deletes every other worktree's host block and
+  # breaks their saved machines. A stray run with a different state dir is
+  # enough to do that, so record who owns the file and refuse to take it over.
+  local owner_file="$file.owner" owner mine
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  mine="$(cd "$(wtdc::state_dir)" 2>/dev/null && pwd)"
+  owner="$(cat "$owner_file" 2>/dev/null || true)"
+  if [ -n "$owner" ] && [ "$owner" != "$mine" ]; then
+    wtdc::warn "not rewriting $(basename "$file"): it belongs to state dir $owner, not $mine"
+    return 0
+  fi
+  # No owner recorded yet: the file predates this check, or was written before
+  # it existed. Claim it only if every Host block in it is one of our own
+  # aliases. Anything else might belong to another state dir, so leave it.
+  if [ -z "$owner" ] && [ -s "$file" ]; then
+    local stray=0 alias
+    while read -r alias; do
+      [ -n "$alias" ] || continue
+      state::list | jq -e --arg a "$alias" 'select(.ssh_alias == $a)' >/dev/null 2>&1 ||
+        stray=1
+    done < <(sed -n 's/^Host \(.*\)$/\1/p' "$file")
+    if [ "$stray" = "1" ]; then
+      wtdc::warn "not rewriting $(basename "$file"): it has host blocks this state does not know about"
+      return 0
+    fi
+  fi
+  printf '%s' "$mine" >"$owner_file"
+
   remote::ensure_include
   : >"$file.new"
   while IFS= read -r entry; do
