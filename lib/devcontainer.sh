@@ -83,13 +83,17 @@ dc::build_merged() {
       elif type == "null" then ""
       else tostring end;
 
-    # A prebuilt image already has sshd and herdr, so injecting the feature
-    # would be redundant *and* would make the CLI derive a per-workspace image,
-    # which is the ~25s we are trying to avoid. Only inject when we have to.
+    # A prebuilt image already has sshd and herdr, and declaring ANY feature
+    # makes the CLI derive a per-workspace image, which is the cost we are here
+    # to avoid. So on the prebuilt path features are dropped outright, not just
+    # the one we would have injected: leaving a single feature in place still
+    # costs a full build. dc::build_merged warns about anything it drops.
     (if $prebuilt == "" then
        (.features = (.features // {})
         | (if (.features | has($feature)) then . else .features[$feature] = {} end))
      else . end)
+    | (if $prebuilt != "" and (.features // {} | length) > 0
+       then .features = {} else . end)
     | (if $prebuilt != "" then .image = $prebuilt else . end)
     | (if $prebuilt != "" and ($ruser | length) > 0 then .remoteUser = $ruser else . end)
     | (if (.dockerComposeFile // null) != null then
@@ -146,8 +150,20 @@ dc::build_merged() {
     return 1
   fi
 
-  rm -f "$plain"
+  # Dropping a user's declared features changes what their container contains,
+  # so never do it quietly. The prebuilt templates are expected to already
+  # provide them. Read the source before it is cleaned up.
+  local prebuilt dropped
+  prebuilt="$(dc::prebuilt_image)"
+  if [ -n "$prebuilt" ]; then
+    dropped="$(jq -r '(.features // {}) | keys | join(", ")' "$plain" 2>/dev/null || true)"
+    if [ -n "$dropped" ]; then
+      wtdc::warn "using prebuilt image $prebuilt, so these features are not applied: $dropped"
+      wtdc::detail "pick a template that already includes them, or unset WTDC_IMAGE/WTDC_TEMPLATE to keep them"
+    fi
+  fi
 
+  rm -f "$plain"
   # The merged copy lives outside the worktree, so every host-relative path
   # has to be pinned to an absolute one or the build would look in the wrong
   # place. Paths inside the container (workspaceFolder, workspaceMount) are

@@ -50,9 +50,15 @@ RUN set -eux; \
     chmod 0440 "/etc/sudoers.d/90-${USER_NAME}"
 
 # sshd: key-only, root allowed, host keys generated now rather than on boot.
+#
+# Port 2222, not the default 22. The plugin publishes WTDC_SSH_PORT (2222) and
+# the devcontainers sshd feature also uses 2222; an image listening on 22
+# answers nothing and the provision just times out waiting for it.
+ARG SSH_PORT=2222
 RUN mkdir -p /var/run/sshd /etc/ssh \
  && ssh-keygen -A \
  && printf '%s\n' \
+      "Port ${SSH_PORT}" \
       'PermitRootLogin yes' \
       'PasswordAuthentication no' \
       'KbdInteractiveAuthentication no' \
@@ -60,7 +66,8 @@ RUN mkdir -p /var/run/sshd /etc/ssh \
       'UsePAM yes' \
       'X11Forwarding no' \
       'AcceptEnv LANG LC_*' \
-      > /etc/ssh/sshd_config.d/10-herdr.conf
+      > /etc/ssh/sshd_config.d/10-herdr.conf \
+ && sed -i "s/^#\\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
 
 COPY ssh-init.sh /usr/local/share/ssh-init.sh
 RUN chmod +x /usr/local/share/ssh-init.sh
