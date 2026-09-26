@@ -100,7 +100,11 @@ dc::build_merged() {
            + " >> \"$HOME/.ssh/authorized_keys\""
            + " && chmod 700 \"$HOME/.ssh\""
            + " && chmod 600 \"$HOME/.ssh/authorized_keys\""),
-          ("( " + $install + " ) || echo \"WTDC: herdr install failed inside the container\"")
+          # Keep the installer output: a network blip during image setup
+          # otherwise fails silently, and the plugin needs something to show.
+          ("( " + $install + " ) > /tmp/wtdc-install.log 2>&1"
+           + " || echo \"WTDC: herdr install failed inside the container,"
+           + " see /tmp/wtdc-install.log\"")
         ]
         | map(select(. != ""))
         | join(" && ")

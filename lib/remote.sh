@@ -15,10 +15,9 @@ WTDC_REMOTE_SH_LOADED=1
 
 SSH_CONFIG_INCLUDE_LINE='Include ~/.ssh/config.d/*'
 SSH_CONFIG_DIRNAME=herdr-worktree-devcontainer
-# `docker exec` runs as the image user (usually root), so $HOME is the wrong
-# home and herdr installed into the remoteUser's ~/.local/bin is invisible.
-# Resolve the provisioned user and its real home before running anything.
-CTR_PATH_PREFIX='u=$(cat /tmp/wtdc-user 2>/dev/null || echo root); h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6); [ -n "$h" ] || h="/home/$u"; export HOME="$h"; export PATH="$h/.local/bin:$PATH";'
+# The provisioned user and its home are already passed in via `docker exec -u`
+# and `-e HOME` (see remote::container_herdr), so the shell only needs PATH.
+CTR_PATH_PREFIX='export PATH="$HOME/.local/bin:$PATH";'
 
 remote::ssh_dir() {
   printf '%s/ssh' "$(wtdc::state_dir)"
@@ -177,8 +176,25 @@ remote::container_herdr() {
   docker exec -u "${user:-root}" -e HOME="$home" "$cid" sh -lc "$CTR_PATH_PREFIX $*"
 }
 
+remote::container_herdr_install_log() {
+  docker exec "$1" sh -lc 'tail -n 20 /tmp/wtdc-install.log 2>/dev/null' 2>/dev/null
+}
+
+# A network blip while the image was being set up leaves the container without
+# herdr even though postCreateCommand "succeeded" (it ends in `|| echo`). The
+# container is already up at this point, so just run the same install again
+# rather than telling the user to go and fix their devcontainer config.
 remote::ensure_container_herdr() {
   local cid="$1" out
+  if out="$(remote::container_herdr "$cid" 'herdr --version' 2>/dev/null)" && [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+
+  wtdc::warn "herdr is missing from the container; retrying the install once"
+  if [ -n "$WTDC_CONTAINER_INSTALL" ]; then
+    remote::container_herdr "$cid" "$WTDC_CONTAINER_INSTALL" >/dev/null 2>&1 || true
+  fi
   if out="$(remote::container_herdr "$cid" 'herdr --version' 2>/dev/null)" && [ -n "$out" ]; then
     printf '%s' "$out"
     return 0
@@ -188,13 +204,24 @@ remote::ensure_container_herdr() {
 
 # Start the container-side server ourselves so that `herdr machine add` finds a
 # running, compatible server and stays silent instead of prompting to install.
+#
+# It has to be started with setsid: herdr reports detached_server_daemon as
+# getsid(0) == getpid(), so a plain `nohup ... &` leaves it in the exec's
+# session and `herdr machine add` then refuses with "remote server is not
+# ready for saved machines".
 remote::start_container_server() {
-  local cid="$1" session="${2:-}" waited=0 out
+  local cid="$1" session="${2:-}" waited=0 out cmd
   if [ -n "$session" ]; then
-    remote::container_herdr "$cid" "nohup herdr --session '$session' server >/tmp/herdr-server.log 2>&1 &" >/dev/null
+    cmd="herdr --session '$session' server"
   else
-    remote::container_herdr "$cid" 'nohup herdr server >/tmp/herdr-server.log 2>&1 &' >/dev/null
+    cmd="herdr server"
   fi
+  remote::container_herdr "$cid" \
+    "if command -v setsid >/dev/null 2>&1; then
+       setsid $cmd </dev/null >/tmp/herdr-server.log 2>&1 &
+     else
+       nohup $cmd </dev/null >/tmp/herdr-server.log 2>&1 &
+     fi" >/dev/null
 
   while [ "$waited" -lt 60 ]; do
     out="$(remote::container_herdr "$cid" 'herdr status server' 2>/dev/null || true)"

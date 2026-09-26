@@ -19,10 +19,20 @@ herdr plugin list 2>/dev/null | grep -q "$PLUGIN_ID" || {
   echo "link the plugin first: herdr plugin link $PLUGIN_ROOT" >&2; exit 2; }
 
 SANDBOX="$(mktemp -d)"
+
+# Only ever remove containers this script created. `label=devcontainer.local_folder`
+# matches every devcontainer on the host, including the user's own, so the
+# workspace path has to be matched against this sandbox explicitly.
 cleanup() {
-  [ -n "${CONTAINER_ID:-}" ] && docker rm -f "$CONTAINER_ID" >/dev/null 2>&1
+  local c folder
+  for c in $(docker ps -aq --filter "label=devcontainer.local_folder" 2>/dev/null); do
+    folder="$(docker inspect -f '{{index .Config.Labels "devcontainer.local_folder"}}' "$c" 2>/dev/null)"
+    case "$folder" in
+      "$SANDBOX"/*) echo "removing test container $c ($folder)"; docker rm -f "$c" >/dev/null 2>&1 ;;
+      *) echo "leaving container $c alone ($folder)" ;;
+    esac
+  done
   [ -n "${MACHINE_ID:-}" ] && herdr machine remove "$MACHINE_ID" >/dev/null 2>&1
-  git -C "$SANDBOX/repo" worktree remove --force "$SANDBOX/wt" >/dev/null 2>&1
   rm -rf "$SANDBOX"
 }
 trap cleanup EXIT

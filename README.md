@@ -138,6 +138,21 @@ The same `postCreateCommand` also installs herdr inside the container and the
 plugin starts the container-side server itself. That is deliberate: when
 `herdr machine add` runs it finds a compatible binary and a running server, so
 it saves the profile without stopping to ask you to install or replace anything.
+Two details matter there:
+
+- The server is started with `setsid`. Herdr reports its
+  `detached_server_daemon` capability as `getsid(0) == getpid()`, so a server
+  left in the `docker exec` session is rejected with *"remote server is not
+  ready for saved machines"*.
+- Every container command runs as the provisioned `remoteUser`, not the image
+  user. Started as root, the server would leave root-owned state in the user's
+  home and the later SSH session would fail with `EACCES`.
+
+Installing herdr during image setup needs network access, and that step ends in
+`|| echo` so one flaky download cannot fail the whole build. If herdr turns out
+to be missing afterwards, the plugin retries the same install against the
+running container and, if that still fails, prints the installer log it kept at
+`/tmp/wtdc-install.log`.
 
 ### Your config is never modified
 
@@ -198,12 +213,19 @@ bash tests/e2e.sh          # full provision/teardown/hooks vs stubbed host tools
 bash tests/real-e2e.sh     # a real container, real sshd, real saved machine
 ```
 
-`real-e2e.sh` needs docker, the Dev Container CLI, a linked plugin, and pulls
+`real-e2e.sh` needs docker, the Dev Container CLI, a linked plugin, and builds
 an image. Point it at a CLI that is not on `PATH`:
 
 ```sh
-DEVCONTAINER_CLI=/tmp/dccli/node_modules/.bin/devcontainer bash tests/real-e2e.sh
+DEVCONTAINER_CLI=/path/to/devcontainer bash tests/real-e2e.sh
 ```
+
+It only ever removes containers whose workspace lives under its own temp
+directory, so your own dev containers are left alone.
+
+To try the plugin by hand, this repo is its own fixture: it has a
+`.devcontainer/devcontainer.json` that deliberately omits everything the plugin
+injects. Create a Herdr worktree from it and the prompt overlay will appear.
 
 ## Uninstall
 

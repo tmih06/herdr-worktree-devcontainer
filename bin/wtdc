@@ -182,9 +182,10 @@ do_provision() {
   wtdc::step "Checking the Herdr install inside the container"
   local container_herdr_version
   if ! container_herdr_version="$(remote::ensure_container_herdr "$cid")"; then
-    wtdc::die "herdr is not installed inside the container.
-   postCreateCommand should install it. Re-run with WTDC_CONTAINER_INSTALL set
-   to a command that works in your base image, or install it in your image."
+    wtdc::die "herdr is not installed inside the container, even after a retry.
+   installer log from the container:
+$(remote::container_herdr_install_log "$cid" | sed 's/^/     /')
+   check it with: docker exec -it ${cid:0:12} cat /tmp/wtdc-install.log"
   fi
   wtdc::detail "$container_herdr_version"
 
