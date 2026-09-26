@@ -68,6 +68,7 @@ dc::build_merged() {
     --arg pubkey "$pubkey" \
     --arg install "$WTDC_CONTAINER_INSTALL" \
     --arg cport "$WTDC_SSH_PORT" \
+    --arg plugindir "$(dc::plugin_share_dir)" \
     '
     # The Dev Container CLI joins postCreateCommand array items with a space and
     # execs the result as one command line, so an array is NOT a safe way to
@@ -88,27 +89,49 @@ dc::build_merged() {
     | .runArgs = ((.runArgs // [])
                   + (if ((.runArgs // []) | index("--publish")) then []
                      else ["--publish", "127.0.0.1::" + $cport] end))
+    | .remoteEnv = ((.remoteEnv // {}) + {WTDC_IN_CONTAINER: "1"})
     | .postCreateCommand = (
-        [
-          (.postCreateCommand // null | as_cmd_string),
-          # postCreateCommand runs as the devcontainer remoteUser, which is not
-          # the USER of the image (that is often root). Record who we actually
-          # provisioned so the SSH login matches the account we set up.
-          ("id -un > /tmp/wtdc-user"
-           + " && mkdir -p \"$HOME/.ssh\""
-           + " && echo \"" + $pubkey + "\""
-           + " >> \"$HOME/.ssh/authorized_keys\""
-           + " && chmod 700 \"$HOME/.ssh\""
-           + " && chmod 600 \"$HOME/.ssh/authorized_keys\""),
-          # Keep the installer output: a network blip during image setup
-          # otherwise fails silently, and the plugin needs something to show.
-          ("( " + $install + " ) > /tmp/wtdc-install.log 2>&1"
-           + " || echo \"WTDC: herdr install failed inside the container,"
-           + " see /tmp/wtdc-install.log\"")
-        ]
-        | map(select(. != ""))
-        | join(" && ")
-      )
+        (
+          [
+            (.postCreateCommand // null | as_cmd_string),
+            # postCreateCommand runs as the devcontainer remoteUser, which is not
+            # the USER of the image (that is often root). Record who we
+            # actually provisioned so the SSH login matches that account.
+            ("id -un > /tmp/wtdc-user"
+             + " && mkdir -p \"$HOME/.ssh\""
+             + " && echo \"" + $pubkey + "\""
+             + " >> \"$HOME/.ssh/authorized_keys\""
+             + " && chmod 700 \"$HOME/.ssh\""
+             + " && chmod 600 \"$HOME/.ssh/authorized_keys\"")
+          ]
+          # The shared plugins land at the host absolute path, which is not
+          # the home of the container user, so link them where the container
+          # herdr will actually look. No-op when the mount is absent.
+          + (if $plugindir == "" then []
+             else
+               ["if [ -d \"" + $plugindir + "\" ]; then"
+                + " mkdir -p \"$HOME/.config/herdr\""
+                + " && ln -sfn \"" + $plugindir + "\" \"$HOME/.config/herdr/plugins\""
+                + "; fi"]
+             end)
+          # Only download when there is no herdr to use. When the plugin bind
+          # mounts a herdr binary, `command -v` finds it and the ~30s download
+          # is skipped; if the mount is missing (compose configs take no
+          # --mount) this still installs. The braces are load-bearing: `a || b
+          # && c` is left-associative, so without them the download would run
+          # even when `a` succeeded. Keep the output too: a network blip during
+          # image setup otherwise fails silently.
+          + (if $install == "" then []
+             else
+              ["( command -v herdr >/dev/null 2>&1 || { " + $install + " ; }"
+               + " ) > /tmp/wtdc-install.log 2>&1"
+               + " || echo \"WTDC: herdr install failed inside the container,"
+               + " see /tmp/wtdc-install.log\""]
+            end)
+        )
+         | map(select(. != ""))
+         | join(" && ")
+       )
     ' "$plain" >"$out"; then
     rm -f "$plain"
     return 1
@@ -154,6 +177,58 @@ dc::absolutize_paths() {
   rm -f "$tmp"
 }
 
+# The host already has a herdr binary, so reuse it instead of downloading 26MB
+# on every provision (measured at ~31s). The devcontainer CLI's --mount only
+# accepts type/source/target/external, with no read-only option, so mounting
+# the host's live binary would hand the container write access to it. Mount a
+# cache copy instead: the worst a container can do is corrupt the cache, which
+# is rebuilt from the host binary whenever it stops being runnable.
+dc::herdr_share_mount() {
+  case "${WTDC_SHARE_HERDR_BIN:-auto}" in
+    0 | false | no) return 0 ;;
+  esac
+  [ "$(uname -s)" = "Linux" ] || return 0
+  local host_bin cache
+  host_bin="${HERDR_BIN_PATH:-}"
+  if [ -z "$host_bin" ] || [ ! -x "$host_bin" ]; then
+    host_bin="$(command -v herdr 2>/dev/null || true)"
+  fi
+  [ -n "$host_bin" ] && [ -x "$host_bin" ] || return 0
+
+  cache="$(wtdc::state_dir)/cache/herdr"
+  mkdir -p "$(dirname "$cache")"
+  # Refresh when missing, or when a container-corrupted copy no longer runs.
+  if [ ! -x "$cache" ] || ! "$cache" --version >/dev/null 2>&1; then
+    cp -f "$host_bin" "$cache" 2>/dev/null || return 0
+    chmod +x "$cache" 2>/dev/null || return 0
+  fi
+  printf 'type=bind,source=%s,target=/usr/local/bin/herdr' "$cache"
+}
+
+# Share the host's installed plugins so the same tooling works in the
+# container. This plugin's own code lives in its repo rather than here, so it is
+# not carried across; WTDC_IN_CONTAINER is the hard guard that makes the
+# no-recursion rule explicit instead of incidental.
+dc::plugin_share_dir() {
+  case "${WTDC_SHARE_HERDR_PLUGINS:-auto}" in
+    0 | false | no) return 0 ;;
+  esac
+  local d="${HERDR_CONFIG_PATH:-$HOME/.config/herdr}/plugins"
+  [ -d "$d" ] || return 0
+  # Never expose this plugin's state dir: it holds the SSH private key.
+  case "$(wtdc::state_dir)" in
+    "$d"/*) return 0 ;;
+  esac
+  printf '%s' "$d"
+}
+
+dc::plugin_share_mount() {
+  local d
+  d="$(dc::plugin_share_dir)"
+  [ -n "$d" ] || return 0
+  printf 'type=bind,source=%s,target=%s' "$d" "$d"
+}
+
 # dc::container_for <worktree_path> -> container id from the devcontainer label
 dc::container_for() {
   local wt="$1"
@@ -173,6 +248,15 @@ dc::up() {
     --remove-existing-container
   )
   [ -n "$WTDC_EXTRA_MOUNTS" ] && args+=(--mount "$WTDC_EXTRA_MOUNTS")
+
+  # Reuse what the host already has instead of re-downloading per container.
+  # Both are optimisations only: the injected postCreateCommand installs herdr
+  # whenever no herdr is on PATH, so a missing or unusable mount still works.
+  local share
+  share="$(dc::herdr_share_mount)"
+  [ -n "$share" ] && args+=(--mount "$share")
+  share="$(dc::plugin_share_mount)"
+  [ -n "$share" ] && args+=(--mount "$share")
 
   set +e
   timeout "$WTDC_BUILD_TIMEOUT" devcontainer "${args[@]}" >"$outf"

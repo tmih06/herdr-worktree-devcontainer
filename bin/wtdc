@@ -593,6 +593,21 @@ JSONC
 # ---------------------------------------------------------------- dispatch
 
 main() {
+  # Hard anti-recursion guard: if this plugin ever loads inside a container it
+  # refuses to act rather than starting a container inside a container.
+  # Checked before anything else, even config loading.
+  #
+  # Two signals, because neither is sufficient alone. The marker file is the
+  # dependable one: postCreateCommand writes it, and it only exists in a
+  # container this plugin provisioned. remoteEnv is best-effort - the dev
+  # container CLI does not always propagate it into the container's own
+  # environment, verified against 0.89.0.
+  local marker="${WTDC_IN_CONTAINER_MARKER:-/tmp/wtdc-user}"
+  if [ "${WTDC_IN_CONTAINER:-}" = "1" ] || [ -f "$marker" ]; then
+    printf 'worktree-devcontainer: disabled inside a dev container\n'
+    exit 0
+  fi
+
   local cmd="${1:-help}"
   shift || true
 

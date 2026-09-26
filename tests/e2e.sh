@@ -15,6 +15,8 @@ mkdir -p "$BIN"
 
 export HOME="$SANDBOX/home"
 mkdir -p "$HOME"
+# Stand in for the host's installed plugins so the share path is exercised.
+mkdir -p "$HOME/.config/herdr/plugins/some-other-plugin"
 export HERDR_PLUGIN_ROOT="$PLUGIN_ROOT"
 export HERDR_PLUGIN_ID=worktree-devcontainer
 export HERDR_PLUGIN_STATE_DIR="$SANDBOX/state"
@@ -232,6 +234,23 @@ expect 'focus happens before the host workspace closes' 'yes' \
   "$(printf '%s' "$calls" | awk '/workspace focus/{f=NR} /workspace close/{c=NR} END{print (f && c && f<c) ? "yes" : "no"}')"
 expect_contains 'completion announced' 'notification show Dev container ready' "$calls"
 expect_contains 'completion used the done sound' '--sound done' "$calls"
+
+step "sharing host state and refusing to recurse"
+merged_cfg="$(jq -r --arg k "$WT" '.entries[$k].merged_config' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+expect 'recursion guard set in remoteEnv' '1' "$(jq -r '.remoteEnv.WTDC_IN_CONTAINER // "no"' "$merged_cfg")"
+expect_contains 'install is skipped when herdr is present' 'command -v herdr >/dev/null 2>&1 || {' "$(jq -r .postCreateCommand "$merged_cfg")"
+expect_contains 'shared plugins linked into the container home' 'ln -sfn' "$(jq -r .postCreateCommand "$merged_cfg")"
+expect 'refuses to act when the container env says so' 'worktree-devcontainer: disabled inside a dev container' \
+  "$(WTDC_IN_CONTAINER=1 "$PLUGIN_ROOT/bin/wtdc" provision "$WT" 2>&1)"
+# The dependable signal: the marker file postCreateCommand writes inside the
+# container. Point it at a temp path so the test never plants the real one,
+# which would silently disable the plugin on the host.
+touch "$SANDBOX/marker"
+expect 'refuses to act when the provision marker is present' 'worktree-devcontainer: disabled inside a dev container' \
+  "$(WTDC_IN_CONTAINER_MARKER="$SANDBOX/marker" "$PLUGIN_ROOT/bin/wtdc" provision "$WT" 2>&1)"
+rm -f "$SANDBOX/marker"
+expect 'and that is a no-op, not a failure' '0' \
+  "$(WTDC_IN_CONTAINER=1 "$PLUGIN_ROOT/bin/wtdc" provision "$WT" >/dev/null 2>&1; echo $?)"
 
 step "merged devcontainer config on disk"
 merged="$(jq -r --arg k "$WT" '.entries[$k].merged_config' "$HERDR_PLUGIN_STATE_DIR/state.json")"

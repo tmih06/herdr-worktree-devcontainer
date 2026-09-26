@@ -117,6 +117,10 @@ check 'host workspace is gone' 'no' \
 check 'a container workspace is focused on the machine' 'yes' \
   "$(herdr --machine "$MACHINE_ID" workspace list 2>/dev/null | jq -e \
      '[(.result.workspaces // [])[] | select(.focused == true)] | length > 0' >/dev/null && echo yes || echo no)"
+check 'recursion marker written into the container' 'yes' \
+  "$(docker exec "$CONTAINER_ID" sh -lc '[ -f /tmp/wtdc-user ] && echo yes || echo no')"
+check 'herdr came from the shared mount, not a download' '0' \
+  "$(docker exec "$CONTAINER_ID" sh -lc 'wc -c < /tmp/wtdc-install.log' | tr -d ' ')"
 check 'remote workspace id recorded in state' 'yes' \
   "$([ -n "$(jq -r --arg k "$WT" '.entries[$k].remote_workspace_id // empty' \
        "$HERDR_PLUGIN_STATE_DIR/state.json")" ] && echo yes || echo no)"

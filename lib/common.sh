@@ -40,16 +40,32 @@ wtdc::warn() {
   printf '%swarn:%s %s\n' "$WTDC_C_YELLOW" "$WTDC_C_RESET" "$*" >&2
 }
 
+# A first build is minutes long, so every phase is timed. Without this the
+# only way to find out where the time went was to add printfs and re-run.
+WTDC_T0="${WTDC_T0:-$SECONDS}"
+WTDC_PHASE_START="$WTDC_T0"
+
+wtdc::elapsed() {
+  local d=$((SECONDS - ${1:-$WTDC_T0}))
+  if [ "$d" -ge 60 ]; then printf '%dm%02ds' $((d / 60)) $((d % 60))
+  else printf '%ds' "$d"; fi
+}
+
 wtdc::step() {
-  printf '%s==>%s %s\n' "$WTDC_C_BLUE" "$WTDC_C_RESET" "$*"
+  printf '%s==>%s [%s] %s\n' "$WTDC_C_BLUE" "$WTDC_C_RESET" \
+    "$(wtdc::elapsed)" "$*"
+  WTDC_PHASE_START="$SECONDS"
 }
 
 wtdc::ok() {
-  printf '%sok:%s %s\n' "$WTDC_C_GREEN" "$WTDC_C_RESET" "$*"
+  printf '%sok:%s [%s] %s\n' "$WTDC_C_GREEN" "$WTDC_C_RESET" \
+    "$(wtdc::elapsed "$WTDC_PHASE_START")" "$*"
+  WTDC_PHASE_START="$SECONDS"
 }
 
 wtdc::info() {
-  printf '%s::%s %s\n' "$WTDC_C_CYAN" "$WTDC_C_RESET" "$*"
+  printf '%s::%s [%s] %s\n' "$WTDC_C_CYAN" "$WTDC_C_RESET" \
+    "$(wtdc::elapsed)" "$*"
 }
 
 wtdc::detail() {
