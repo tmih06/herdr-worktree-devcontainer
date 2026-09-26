@@ -532,10 +532,13 @@ do_selftest() {
     fi
   }
 
-  wtdc::load_config
+  # Point at the temp dirs BEFORE loading config. Loading first picked up the
+  # real user config, so a WTDC_TEMPLATE set on this machine leaked into these
+  # checks and they silently asserted against the prebuilt path instead.
   export HERDR_PLUGIN_STATE_DIR="$tmp/state"
   export HERDR_PLUGIN_CONFIG_DIR="$tmp/config"
   mkdir -p "$HERDR_PLUGIN_STATE_DIR" "$HERDR_PLUGIN_CONFIG_DIR"
+  wtdc::load_config
 
   printf 'jsonc stripping\n'
   cat >"$tmp/dc.json" <<'JSONC'
