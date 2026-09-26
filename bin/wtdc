@@ -142,6 +142,18 @@ do_provision() {
   wtdc::detail "config     $src"
   wtdc::detail "merged     $merged"
 
+  # Say which path this is. Silently taking the slow one is how a user ends up
+  # watching a per-workspace image build with no idea a 4s alternative exists.
+  if [ -z "$(dc::prebuilt_image)" ]; then
+    wtdc::warn "no prebuilt image configured, so this builds an image per worktree (~25s warm, minutes cold)"
+    if [ -f "$WTDC_ROOT/images/manifest.json" ]; then
+      wtdc::detail "for ~4s instead set WTDC_TEMPLATE in $(herdr plugin config-dir "$HERDR_PLUGIN_ID" 2>/dev/null || echo config.env):"
+      wtdc::detail "  base | node | python | rust  (see images/README.md)"
+    fi
+  else
+    wtdc::detail "image     $(dc::prebuilt_image)"
+  fi
+
   pubkey="$(remote::ensure_key)"
   if ! dc::build_merged "$src" "$merged" "$pubkey"; then
     if grep -q 'dockerComposeFile' "$src" 2>/dev/null; then
