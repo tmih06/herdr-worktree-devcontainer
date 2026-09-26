@@ -130,8 +130,21 @@ exit 0
 STUB
 
 cat >"$BIN/herdr" <<'STUB'
-#!/usr/bin/env bash
 echo "$*" >>"$WTDC_FAKE_STATE/herdr_calls"
+if [ "$1" = "plugin" ] && [ "$2" = "pane" ] && [ "$3" = "open" ]; then
+  # Mirror the real contract herdr enforces: overlay and popup panes always
+  # target the active pane, so an explicit --workspace or --target-pane is
+  # rejected. Without this the stub would happily accept the bug.
+  case " $* " in
+    *" --placement overlay "*|*" --placement popup "*)
+      case " $* " in
+        *" --workspace "*|*" --target-pane "*)
+          echo '{"error":{"code":"invalid_params","message":"overlay and popup plugin panes target the active pane"}}'
+          exit 1 ;;
+      esac ;;
+  esac
+  exit 0
+fi
 if [ "$1" = "machine" ] && [ "$2" = "add" ]; then
   label=""
   while [ $# -gt 0 ]; do
@@ -283,18 +296,19 @@ rm -f "$WT3/.devcontainer/devcontainer.json"
 
 step "worktree.created opens the prompt overlay"
 reset_herdr_calls
-HERDR_PLUGIN_EVENT_JSON="$(event_for w10 "$WT2" second "$REPO")" \
-  "$PLUGIN_ROOT/bin/wtdc" hook-created
-expect_contains 'prompt pane requested' 'plugin pane open --plugin worktree-devcontainer --entrypoint prompt' \
-  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
-expect_contains 'prompt targets the new workspace' '--workspace w10' \
-  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
-expect_contains 'prompt uses the overlay placement' '--placement overlay' \
-  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
-expect_contains 'prompt carries the checkout path' "WTDC_CHECKOUT=$WT2" \
-  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
-expect_contains 'prompt carries the worktree label' 'WTDC_LABEL=second' \
-  "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
+hook_out="$(HERDR_PLUGIN_EVENT_JSON="$(event_for w10 "$WT2" second "$REPO")" \
+  "$PLUGIN_ROOT/bin/wtdc" hook-created 2>&1)"
+calls="$(cat "$WTDC_FAKE_STATE/herdr_calls")"
+expect 'hook reports no failure' '' "$hook_out"
+expect_contains 'prompt pane requested' 'plugin pane open --plugin worktree-devcontainer --entrypoint prompt' "$calls"
+expect_contains 'prompt uses the overlay placement' '--placement overlay' "$calls"
+expect_contains 'prompt carries the checkout path' "WTDC_CHECKOUT=$WT2" "$calls"
+expect_contains 'prompt carries the worktree label' 'WTDC_LABEL=second' "$calls"
+expect_contains 'prompt still receives the workspace id as env' 'WTDC_WORKSPACE=w10' "$calls"
+# herdr rejects --workspace for an overlay pane: it always targets the active
+# pane. The stub enforces that contract, so a regression fails this run.
+expect 'prompt does not target a workspace directly' '0' \
+  "$(printf '%s' "$calls" | grep -c -- '--placement overlay.*--workspace' || true)"
 
 step "worktree.created stays quiet without a devcontainer config"
 reset_herdr_calls

@@ -56,23 +56,27 @@ open_build_pane() {
     --focus
   )
   [ -n "$workspace" ] && args+=(--workspace "$workspace")
-  wtdc::herdr "${args[@]}" >/dev/null 2>&1 || wtdc::warn "could not open the build pane"
+  local out
+  if ! out="$(wtdc::herdr "${args[@]}" 2>&1)"; then
+    wtdc::warn "could not open the build pane: $out"
+  fi
 }
 
 open_prompt_pane() {
   local checkout="$1" workspace="${2:-}" label="${3:-}" repo="${4:-}"
-  local args=(
-    plugin pane open
-    --plugin "$HERDR_PLUGIN_ID"
-    --entrypoint prompt
-    --placement overlay
-    --env "WTDC_CHECKOUT=$checkout"
-    --env "WTDC_WORKSPACE=$workspace"
-    --env "WTDC_LABEL=$label"
-    --env "WTDC_REPO=$repo"
-  )
-  [ -n "$workspace" ] && args+=(--workspace "$workspace")
-  wtdc::herdr "${args[@]}" >/dev/null 2>&1 || wtdc::warn "could not open the prompt pane"
+  # overlay always targets the active pane: herdr rejects an explicit
+  # --workspace or --target-pane with that placement.
+  local out
+  if ! out="$(wtdc::herdr plugin pane open \
+    --plugin "$HERDR_PLUGIN_ID" \
+    --entrypoint prompt \
+    --placement overlay \
+    --env "WTDC_CHECKOUT=$checkout" \
+    --env "WTDC_WORKSPACE=$workspace" \
+    --env "WTDC_LABEL=$label" \
+    --env "WTDC_REPO=$repo" 2>&1)"; then
+    wtdc::warn "could not open the prompt pane: $out"
+  fi
 }
 
 require_config() {
