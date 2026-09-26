@@ -235,6 +235,11 @@ do_provision() {
   alias="$(state::get "$checkout" | jq -r '.ssh_alias')"
   remote::rewrite_ssh_config
 
+  wtdc::step "Starting sshd in the container"
+  if ! remote::ensure_sshd "$cid"; then
+    wtdc::warn "sshd is not running in the container yet; it may still start on its own"
+  fi
+
   wtdc::step "Waiting for sshd in the container"
   if ! remote::wait_ssh "$alias" "$WTDC_READY_TIMEOUT"; then
     wtdc::die "sshd never became reachable at $alias within ${WTDC_READY_TIMEOUT}s.
@@ -409,9 +414,14 @@ hook_removed() {
   local checkout
   checkout="$(wtdc::event_worktree_path "$event")"
   [ -n "$checkout" ] || exit 0
-  state::has "$checkout" || exit 0
 
-  do_teardown "$checkout"
+  # Tear down what we know about, then sweep by label whatever is left. A
+  # provisioning that failed after `up` succeeded has no state entry but does
+  # have a running container, and that is exactly what used to leak.
+  if state::has "$checkout"; then
+    do_teardown "$checkout"
+  fi
+  dc::remove_orphans "$checkout"
 }
 
 do_startup() {

@@ -58,6 +58,11 @@ case "$1 $2" in
       [ -f "$WTDC_FAKE_STATE/container" ] && cat "$WTDC_FAKE_STATE/container"
     fi
     exit 0 ;;
+  ps)
+    if [ "${2:-}" = "-aq" ] && [[ "${4:-}" == label=devcontainer.local_folder=* ]]; then
+      [ -f "$WTDC_FAKE_STATE/container" ] && cat "$WTDC_FAKE_STATE/container"
+    fi
+    exit 0 ;;
 esac
 case "$1" in
   ps)
@@ -468,6 +473,28 @@ expect 'unrelated worktree left alone' 'devc-repo-second' \
 expect 'container destroyed by the removal hook' 'no' \
   "$([ -f "$WTDC_FAKE_STATE/container" ] && echo yes || echo no)"
 
+step "worktree.removed sweeps containers even with no state entry"
+WT7="$SANDBOX/worktrees/orphan"
+git -C "$REPO" worktree add -q -b orphan "$WT7" 2>/dev/null
+rm -f "$WT7/.devcontainer/devcontainer.json"
+cp "$WT/.devcontainer/devcontainer.json" "$WT7/.devcontainer/devcontainer.json"
+# Provision, then lose the state entry the way a failed provisioning would.
+"$PLUGIN_ROOT/bin/wtdc" provision "$WT7" w15 orphan >/dev/null 2>&1
+jq 'del(.entries[])' "$HERDR_PLUGIN_STATE_DIR/state.json" > "$HERDR_PLUGIN_STATE_DIR/s.json" \
+  && mv "$HERDR_PLUGIN_STATE_DIR/s.json" "$HERDR_PLUGIN_STATE_DIR/state.json"
+expect 'state entry is gone' 'no' \
+  "$(jq -r --arg k "$WT7" '.entries[$k] // "no"' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+echo deadbeefcafe > "$WTDC_FAKE_STATE/container"
+expect 'but the container still exists' 'yes' \
+  "$([ -f "$WTDC_FAKE_STATE/container" ] && echo yes || echo no)"
+rm_event3="$(jq -n --arg ws w15 --arg wt "$WT7" '{
+  event: "worktree.removed",
+  data: { workspace_id: $ws, worktree: { path: $wt, label: "orphan" }, forced: false }
+}')"
+HERDR_PLUGIN_EVENT_JSON="$rm_event3" "$PLUGIN_ROOT/bin/wtdc" hook-removed
+expect 'the orphaned container is swept anyway' 'no' \
+  "$([ -f "$WTDC_FAKE_STATE/container" ] && echo yes || echo no)"
+
 step "worktree.removed ignores untracked worktrees"
 reset_herdr_calls
 rm_event2="$(jq -n --arg wt "$SANDBOX/worktrees/ghost" '{
@@ -477,6 +504,17 @@ rm_event2="$(jq -n --arg wt "$SANDBOX/worktrees/ghost" '{
 HERDR_PLUGIN_EVENT_JSON="$rm_event2" "$PLUGIN_ROOT/bin/wtdc" hook-removed
 expect 'no machine removal attempted' '0' \
   "$(grep -c 'machine remove' "$WTDC_FAKE_STATE/herdr_calls" || true)"
+step "re-provisioning replaces the machine instead of duplicating it"
+# Two provisions in a row, so the label the stub reports is the one under test.
+"$PLUGIN_ROOT/bin/wtdc" provision "$WT" w9 demo >/dev/null 2>&1
+: > "$WTDC_FAKE_STATE/removed_machines"
+"$PLUGIN_ROOT/bin/wtdc" provision "$WT" w9 demo >/dev/null 2>&1
+expect 'the previous profile is removed before another is added' 'yes' \
+  "$(grep -qx m1 "$WTDC_FAKE_STATE/removed_machines" && echo yes || echo no)"
+expect 'exactly one machine carries the label afterwards' '1' \
+  "$("$PLUGIN_ROOT/bin/wtdc" status >/dev/null 2>&1; \
+     env -u WTDC_TEMPLATE "$PLUGIN_ROOT/bin/wtdc" status 2>/dev/null \
+       | grep -c 'devc-repo-demo')"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then

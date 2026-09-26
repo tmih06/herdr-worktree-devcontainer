@@ -176,6 +176,29 @@ remote::container_herdr() {
   docker exec -u "${user:-root}" -e HOME="$home" "$cid" sh -lc "$CTR_PATH_PREFIX $*"
 }
 
+# Start sshd in a running container, fully detached.
+#
+# Deliberately not part of postCreateCommand: anything that command leaves
+# running inherits the devcontainer CLI stdout pipe and holds it open, so the
+# CLI waits for an EOF that never arrives and `up` hangs until its own timeout.
+# `docker exec -d` is detached by construction, so it cannot do that.
+remote::ensure_sshd() {
+  local cid="$1"
+  if docker exec "$cid" sh -lc 'pgrep -x sshd >/dev/null 2>&1' 2>/dev/null; then
+    return 0
+  fi
+  docker exec -d -u root "$cid" /usr/sbin/sshd >/dev/null 2>&1 || return 1
+  local waited=0
+  while [ "$waited" -lt 20 ]; do
+    if docker exec "$cid" sh -lc 'pgrep -x sshd >/dev/null 2>&1' 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
 remote::container_herdr_install_log() {
   docker exec "$1" sh -lc 'tail -n 20 /tmp/wtdc-install.log 2>/dev/null' 2>/dev/null
 }
@@ -236,7 +259,17 @@ remote::start_container_server() {
 
 # remote::add_machine <ssh_alias> <label> -> machine profile id
 remote::add_machine() {
-  local alias="$1" label="$2" out
+  local alias="$1" label="$2" out existing
+
+  # `herdr machine add` does not replace an existing profile with the same
+  # label, it adds another one. Re-provisioning a worktree therefore stacked
+  # up ghosts in the sidebar, each pointing at the same ssh target and none of
+  # them usable once the container was replaced. Drop the old one first.
+  while read -r existing; do
+    [ -n "$existing" ] || continue
+    wtdc::herdr machine remove "$existing" >/dev/null 2>&1 || true
+  done < <(remote::machine_ids "$label")
+
   if [ -n "$WTDC_REMOTE_SESSION" ]; then
     out="$(wtdc::herdr machine add "$alias" --label "$label" --remote-session "$WTDC_REMOTE_SESSION" 2>&1)" || {
       printf '%s\n' "$out" >&2
@@ -249,6 +282,17 @@ remote::add_machine() {
     }
   fi
   remote::machine_id "$label"
+}
+
+# Every id carrying this label, not just the first: that is how the duplicates
+# were allowed to accumulate.
+remote::machine_ids() {
+  local label="$1"
+  wtdc::herdr machine list --json 2>/dev/null | jq -r --arg l "$label" '
+    (if type == "object" then (.machines // .profiles // []) else . end)
+    | map(select(.label == $l))
+    | .[] | (.id // .machine_id // empty)
+  '
 }
 
 remote::machine_id() {

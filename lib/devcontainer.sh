@@ -112,15 +112,11 @@ dc::build_merged() {
         (
           [
             (.postCreateCommand // null | as_cmd_string),
-            # A prebuilt image has no sshd *feature*, and the devcontainer CLI
-            # overrides the image ENTRYPOINT with /bin/sh, so an ENTRYPOINT that
-            # starts sshd never runs. Start it here instead. The guard keeps
-            # this harmless on the feature path, where sshd is already up.
-            ("(command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ])"
-             + " && (pgrep -x sshd >/dev/null 2>&1"
-             + " || sudo -n /usr/sbin/sshd)"
-             + " || echo \"WTDC: sshd is installed but could not be started;"
-             + " check NOPASSWD sudo for the container user\""),
+            # sshd is deliberately NOT started here. Anything this command
+            # leaves running inherits the devcontainer CLI stdout pipe and
+            # holds it open, so the CLI waits for EOF that never arrives and
+            # `up` hangs until its own timeout. The plugin starts sshd with
+            # `docker exec -d` after `up` returns, which is fully detached.
             ("id -un > /tmp/wtdc-user"
              + " && mkdir -p \"$HOME/.ssh\""
              + " && echo \"" + $pubkey + "\""
@@ -332,6 +328,27 @@ dc::plugin_share_mount() {
   d="$(dc::plugin_share_dir)"
   [ -n "$d" ] || return 0
   printf 'type=bind,source=%s,target=%s' "$d" "$d"
+}
+
+# Remove any container still labelled with this workspace, regardless of
+# whether the plugin has state for it.
+#
+# A provisioning that fails after `devcontainer up` succeeded leaves a running
+# container behind, and the failure path deliberately drops the state entry so
+# the worktree stays retryable. That is right for retrying, but it means a later
+# `worktree.removed` finds no state and used to leave the container to docker's
+# own pruning. The devcontainer label is the authority here, not our bookkeeping.
+dc::remove_orphans() {
+  local wt="$1" c removed=0
+  for c in $(docker ps -aq --filter "label=devcontainer.local_folder=$wt" 2>/dev/null); do
+    if docker rm -f "$c" >/dev/null 2>&1; then
+      removed=$((removed + 1))
+    fi
+  done
+  if [ "$removed" -gt 0 ]; then
+    wtdc::ok "removed $removed orphaned container(s) for $wt"
+  fi
+  return 0
 }
 
 # dc::container_for <worktree_path> -> container id from the devcontainer label
