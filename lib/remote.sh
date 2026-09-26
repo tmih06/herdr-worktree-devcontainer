@@ -78,8 +78,12 @@ remote::rewrite_ssh_config() {
   # different state dir silently deletes every other worktree's host block and
   # breaks their saved machines. A stray run with a different state dir is
   # enough to do that, so record who owns the file and refuse to take it over.
-  local owner_file="$file.owner" owner mine
-  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  # The sidecar must NOT live in ~/.ssh/config.d: OpenSSH reads every file in
+  # that directory as configuration, and a non-SSH file there makes it fail to
+  # parse, which breaks every saved machine at once.
+  local owner_file owner mine
+  mkdir -p "$(wtdc::state_dir)" 2>/dev/null || true
+  owner_file="$(wtdc::state_dir)/ssh-dropin.owner"
   mine="$(cd "$(wtdc::state_dir)" 2>/dev/null && pwd)"
   owner="$(cat "$owner_file" 2>/dev/null || true)"
   if [ -n "$owner" ] && [ "$owner" != "$mine" ]; then
@@ -340,16 +344,36 @@ remote::remove_machine() {
   wtdc::herdr machine remove "$id" >/dev/null 2>&1 || true
 }
 
-# Creates the in-container workspace and echoes its id, so the caller can focus
-# it. Workspaces live on the machine that owns them, so this is what makes new
-# terminals there open inside the container.
+# Gives the machine a single, properly named workspace and echoes its id.
+#
+# A fresh herdr server in the container already has one workspace labelled "~".
+# Creating a second one gave two rows in the sidebar, one of them blank, so
+# reuse and rename the existing one instead of adding to it.
 remote::open_remote_workspace() {
-  local machine_id="$1" cwd="$2" label="$3" out
+  local machine_id="$1" cwd="$2" label="$3" out existing ws
   [ "$WTDC_OPEN_REMOTE_WORKSPACE" = "1" ] || return 0
-  [ -n "$machine_id" ] && [ -n "$cwd" ] || return 0
+  [ -n "$machine_id" ] || return 0
+
+  existing="$(remote::first_workspace_id "$machine_id")"
+  if [ -n "$existing" ]; then
+    if wtdc::herdr --machine "$machine_id" workspace rename "$existing" "$label" >/dev/null 2>&1; then
+      printf '%s' "$existing"
+      return 0
+    fi
+  fi
+
+  [ -n "$cwd" ] || return 0
   out="$(wtdc::herdr --machine "$machine_id" workspace create \
     --cwd "$cwd" --label "$label" --no-focus 2>/dev/null)" || return 0
   printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null
+}
+
+# The first workspace the container's own server created, if any.
+remote::first_workspace_id() {
+  local machine_id="$1"
+  wtdc::herdr --machine "$machine_id" workspace list 2>/dev/null | jq -r '
+    (.result.workspaces // .workspaces // []) | sort_by(.number) | .[0].workspace_id // empty
+  ' 2>/dev/null
 }
 
 # Herdr renders one client against a selected machine, so focusing a workspace

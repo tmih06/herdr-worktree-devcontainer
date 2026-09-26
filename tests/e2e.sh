@@ -191,8 +191,15 @@ fi
 # subcommand pair rather than a fixed position.
 args=" $* "
 case "$args" in
+  *" workspace list "*)
+    echo '{"result":{"workspaces":[{"workspace_id":"wr1","label":"~","number":1}]}}'
+    exit 0 ;;
+  *" workspace rename "*)
+    # args: --machine <id> workspace rename <ws_id> <label>
+    printf '%s\n' "${!#}" >> "$WTDC_FAKE_STATE/renamed"
+    exit 0 ;;
   *" workspace create "*)
-    echo '{"result":{"workspace":{"workspace_id":"wr1"}}}'
+    echo '{"result":{"workspace":{"workspace_id":"wrNEW"}}}'
     exit 0 ;;
 esac
 exit 0
@@ -246,7 +253,7 @@ expect 'machine label carries project and worktree' 'devc-repo-demo' "$(cat "$WT
 
 step "handing the user over to the container"
 calls="$(cat "$WTDC_FAKE_STATE/herdr_calls")"
-expect_contains 'workspace created on the machine' '--machine m1 workspace create' "$calls"
+expect_contains 'workspace resolved on the machine' '--machine m1 workspace' "$calls"
 expect 'remote workspace id recorded' 'wr1' \
   "$(jq -r '.entries["'"$WT"'"].remote_workspace_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect_contains 'container workspace focused' '--machine m1 workspace focus wr1' "$calls"
@@ -328,6 +335,12 @@ expect 'every manifest template is unique' '' \
 expect 'every manifest template has a Dockerfile' '' \
   "$(jq -r '.images[].dir' images/manifest.json | while read -r d; do [ -f "$d/Dockerfile" ] || echo "$d"; done)"
 
+step "the container's own workspace is reused, not duplicated"
+expect 'the existing workspace was renamed' 'yes' \
+  "$(grep -qx 'devc-repo-demo' "$WTDC_FAKE_STATE/renamed" 2>/dev/null && echo yes || echo no)"
+expect 'no second workspace was created' '0' \
+  "$(grep -c 'workspace create' "$WTDC_FAKE_STATE/herdr_calls" || true)"
+
 step "the worktree is left pristine"
 expect 'nothing generated inside the worktree' 'clean' \
   "$(git -C "$WT" status --porcelain | grep -q . && echo dirty || echo clean)"
@@ -345,7 +358,7 @@ expect 'ssh actually dialled' '1' \
 expect_contains 'ssh used the managed alias' 'herdr-devc-repo-demo' "$(cat "$WTDC_FAKE_STATE/ssh_calls")"
 
 step "remote workspace opened"
-expect_contains 'workspace create forwarded to the machine' '--machine m1 workspace create' \
+expect_contains 'workspace resolved against the machine' '--machine m1 workspace' \
   "$(cat "$WTDC_FAKE_STATE/herdr_calls")"
 
 step "idempotence"
