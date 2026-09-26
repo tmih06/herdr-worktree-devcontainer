@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "//": "Read by .github/workflows/images.yml to build every image, and by the plugin (WTDC_TEMPLATE) to resolve a template name to an image reference. Keep the two in sync by only editing this file.",
+  "registry": "ghcr.io/tmih06",
+  "prefix": "herdr-devcontainer",
+  "tag": "latest",
+  "images": [
+    {
+      "name": "base",
+      "dir": "images/base",
+      "description": "Ubuntu with sshd, herdr and common CLI tools. The foundation for the others."
+    },
+    {
+      "name": "node",
+      "dir": "images/node",
+      "base": "base",
+      "description": "base plus Node 24 LTS"
+    },
+    {
+      "name": "python",
+      "dir": "images/python",
+      "base": "base",
+      "description": "base plus CPython 3 and uv"
+    },
+    {
+      "name": "rust",
+      "dir": "images/rust",
+      "base": "base",
+      "description": "base plus a rustup stable toolchain"
+    }
+  ]
+}

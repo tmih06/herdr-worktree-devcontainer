@@ -120,7 +120,10 @@ done
 echo "devcontainer $sub starting" >&2
 [ "$sub" = "up" ] || exit 0
 if [ ! -f "$cfg" ]; then echo "no config at $cfg" >&2; exit 1; fi
-grep -q "sshd" "$cfg" || { echo "merged config is missing the sshd feature" >&2; exit 1; }
+# Either the plugin injected the sshd feature, or it is using a prebuilt image
+# that already has sshd baked in. Both are valid; neither alone is a bug.
+grep -q "sshd" "$cfg" || grep -q '"image"' "$cfg" || {
+  echo "merged config has neither the sshd feature nor a prebuilt image" >&2; exit 1; }
 echo "devcontainer up complete" >&2
 printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"devuser"}'
 STUB
@@ -262,6 +265,36 @@ expect_contains 'upstream runArgs kept' '"--init"' "$(jq -c '.runArgs' "$merged"
 expect_contains 'upstream postCreate kept' 'upstream-ok' "$(jq -c '.postCreateCommand' "$merged")"
 expect_contains 'herdr install injected' 'herdr.dev/install.sh' "$(jq -c '.postCreateCommand' "$merged")"
 expect_contains 'pubkey injected' 'authorized_keys' "$(jq -c '.postCreateCommand' "$merged")"
+
+step "prebuilt images skip the build entirely"
+mkdir -p "$SANDBOX/prebuilt"
+cp -r "$WT/.devcontainer/devcontainer.json" "$SANDBOX/prebuilt/devcontainer.json"
+WT6="$SANDBOX/worktrees/prebuilt"
+git -C "$REPO" worktree add -q -b prebuilt "$WT6" 2>/dev/null
+cp "$SANDBOX/prebuilt/devcontainer.json" "$WT6/.devcontainer/devcontainer.json"
+out="$(WTDC_IMAGE=local/wtdc-prebuilt:test "$PLUGIN_ROOT/bin/wtdc" provision "$WT6" w14 prebuilt 2>&1)"
+if [ -z "$(jq -r --arg k "$WT6" '.entries[$k] // empty' "$HERDR_PLUGIN_STATE_DIR/state.json")" ]; then
+  echo "  provision output:"; printf '%s\n' "$out" | sed 's/^/    | /'
+fi
+merged6="$(jq -r --arg k "$WT6" '.entries[$k].merged_config' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+expect_contains 'the prebuilt image is used verbatim' '"image": "local/wtdc-prebuilt:test"' "$(cat "$merged6")"
+expect_contains 'remoteUser defaults to dev' '"remoteUser": "dev"' "$(cat "$merged6")"
+expect_contains 'still publishes the ssh port' '"--publish","127.0.0.1::2222"' "$(jq -c '.runArgs' "$merged6")"
+expect_contains 'authorized_keys still injected per container' 'authorized_keys' "$(jq -r .postCreateCommand "$merged6")"
+expect 'no features, so no per-workspace image is built' '0' \
+  "$(jq -r '.features // {} | length' "$merged6")"
+# Tear it down again: later sections assert on a single tracked worktree.
+"$PLUGIN_ROOT/bin/wtdc" teardown "$WT6" >/dev/null 2>&1
+
+step "template names resolve through the manifest"
+expect 'template resolves to the registry ref' 'ghcr.io/tmih06/herdr-devcontainer-rust:latest' \
+  "$(env -u WTDC_IMAGE WTDC_TEMPLATE=rust bash -c 'source lib/common.sh; source lib/state.sh; source lib/devcontainer.sh; dc::prebuilt_image')"
+expect 'an unknown template resolves to nothing' '' \
+  "$(env -u WTDC_IMAGE WTDC_TEMPLATE=nope bash -c 'source lib/common.sh; source lib/state.sh; source lib/devcontainer.sh; dc::prebuilt_image' 2>/dev/null)"
+expect 'every manifest template is unique' '' \
+  "$(jq -r '[.images[].name] | if length == (unique | length) then empty else "duplicate template names" end' images/manifest.json)"
+expect 'every manifest template has a Dockerfile' '' \
+  "$(jq -r '.images[].dir' images/manifest.json | while read -r d; do [ -f "$d/Dockerfile" ] || echo "$d"; done)"
 
 step "the worktree is left pristine"
 expect 'nothing generated inside the worktree' 'clean' \

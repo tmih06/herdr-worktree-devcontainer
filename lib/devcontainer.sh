@@ -68,6 +68,8 @@ dc::build_merged() {
     --arg pubkey "$pubkey" \
     --arg install "$WTDC_CONTAINER_INSTALL" \
     --arg cport "$WTDC_SSH_PORT" \
+    --arg prebuilt "$(dc::prebuilt_image)" \
+    --arg ruser "${WTDC_IMAGE_REMOTE_USER:-}" \
     --arg plugindir "$(dc::plugin_share_dir)" \
     '
     # The Dev Container CLI joins postCreateCommand array items with a space and
@@ -81,8 +83,15 @@ dc::build_merged() {
       elif type == "null" then ""
       else tostring end;
 
-    .features = (.features // {})
-    | (if (.features | has($feature)) then . else .features[$feature] = {} end)
+    # A prebuilt image already has sshd and herdr, so injecting the feature
+    # would be redundant *and* would make the CLI derive a per-workspace image,
+    # which is the ~25s we are trying to avoid. Only inject when we have to.
+    (if $prebuilt == "" then
+       (.features = (.features // {})
+        | (if (.features | has($feature)) then . else .features[$feature] = {} end))
+     else . end)
+    | (if $prebuilt != "" then .image = $prebuilt else . end)
+    | (if $prebuilt != "" and ($ruser | length) > 0 then .remoteUser = $ruser else . end)
     | (if (.dockerComposeFile // null) != null then
          error("compose-based devcontainer configs cannot take runArgs")
        else . end)
@@ -145,6 +154,53 @@ dc::build_merged() {
   # untouched on purpose.
   dc::absolutize_paths "$out" "$(dirname "$src")"
   jq -e . "$out" >/dev/null
+}
+
+# Resolve the image to run instead of building one.
+#
+#   WTDC_IMAGE=ghcr.io/me/img:tag   use exactly this
+#   WTDC_TEMPLATE=node              resolve via images/manifest.json
+#   (unset)                          fall back to injecting the sshd feature
+#
+# A prebuilt image declares no `features`, so the devcontainer CLI does not
+# derive a per-workspace image and `up` is just `docker run`. That is the whole
+# reason this path exists.
+dc::prebuilt_image() {
+  if [ -n "${WTDC_IMAGE:-}" ]; then
+    printf '%s' "$WTDC_IMAGE"
+    return 0
+  fi
+  local tpl="${WTDC_TEMPLATE:-}"
+  [ -n "$tpl" ] || return 0
+  local manifest="$WTDC_ROOT/images/manifest.json"
+  if [ ! -f "$manifest" ]; then
+    wtdc::warn "WTDC_TEMPLATE=$tpl but $manifest is missing"
+    return 0
+  fi
+  local tag ref
+  tag="$(jq -r '.tag // "latest"' "$manifest")"
+  ref="$(jq -r --arg n "$tpl" --arg t "$tag" '
+    (.images | map(select(.name == $n)) | .[0].name) as $hit
+    | if $hit == null then "" else (.registry + "/" + .prefix + "-" + $hit + ":" + $t) end
+  ' "$manifest")"
+  if [ -z "$ref" ]; then
+    wtdc::warn "WTDC_TEMPLATE=$tpl is not in images/manifest.json"
+    return 0
+  fi
+  printf '%s' "$ref"
+}
+
+# Pull before `up` so the first provision of a template does not pay for the
+# pull inside the build step.
+dc::prepull_image() {
+  local ref
+  ref="$(dc::prebuilt_image)"
+  [ -n "$ref" ] || return 0
+  docker image inspect "$ref" >/dev/null 2>&1 && return 0
+  wtdc::step "Pulling $ref"
+  docker pull "$ref" >/dev/null 2>&1 ||
+    wtdc::warn "could not pull $ref; devcontainer will retry during up"
+  return 0
 }
 
 dc::absolutize_paths() {
@@ -240,6 +296,7 @@ dc::container_for() {
 dc::up() {
   local wt="$1" cfg="$2" outf rc cid
   outf="$(mktemp)"
+  dc::prepull_image
 
   local args=(
     up

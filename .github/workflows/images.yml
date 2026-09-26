@@ -1,0 +1,144 @@
+name: images
+
+# Builds every template in images/manifest.json and pushes to GHCR.
+#
+# Why this exists: a devcontainer.json that declares `features` makes the
+# devcontainer CLI derive a per-workspace image, so every new worktree pays for
+# an image build. These images have no features, so `devcontainer up` is just
+# `docker run` and a provision is a few seconds instead of half a minute.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/**'
+      - '.github/workflows/images.yml'
+  pull_request:
+    paths:
+      - 'images/**'
+      - '.github/workflows/images.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (defaults to the manifest tag)'
+        required: false
+        type: string
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # Validate before building: a broken manifest should fail in seconds, not
+  # after a base image has been through a full build.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      base_ref: ${{ steps.plan.outputs.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.tag }}'
+          [ -n "$tag" ] || tag=$(jq -r .tag images/manifest.json)
+          registry=$(jq -r .registry images/manifest.json)
+          prefix=$(jq -r .prefix images/manifest.json)
+
+          # base must build first: the others are FROM it.
+          names=$(jq -r '[.images[] | select(.base == null) | .name] | join(",")' images/manifest.json)
+          [ -n "$names" ] || { echo "no base image in the manifest" >&2; exit 1; }
+
+          json=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
+            .images
+            | map(. + {ref: ($reg + "/" + $pre + "-" + .name + ":" + $tag)})
+            | {include: map(.name), matrix: {
+                include: map({name, dir, ref, base_ref:
+                  (if .base then ($reg + "/" + $pre + "-" + .base + ":" + $tag) else null end)})
+              }}
+          ' images/manifest.json)
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(jq -r '.matrix.include[] | select(.base_ref == null) | .ref' <<<"$json")" >> "$GITHUB_OUTPUT"
+          jq -r '.matrix.include[] | "  \(.name) -> \(.ref)"' <<<"$json"
+
+  build:
+    name: build ${{ matrix.name }}
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # base is a dependency of the others, so it must not run beside them.
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the base image
+        if: matrix.base_ref != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.dir }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_ref }}
+          push: false
+          load: true
+          tags: local/${{ matrix.name }}:ci
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.dir }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_ref || needs.plan.outputs.base_ref }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ matrix.ref }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.name }}:ci
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  verify:
+    name: verify
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every template is pullable and runs herdr
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.tag }}'
+          [ -n "$tag" ] || tag=$(jq -r .tag images/manifest.json)
+          registry=$(jq -r .registry images/manifest.json)
+          prefix=$(jq -r .prefix images/manifest.json)
+
+          fail=0
+          while read -r name; do
+            ref="$registry/$prefix-$name:$tag"
+            printf '::group::%s\n' "$ref"
+            if ! docker run --rm --entrypoint /usr/local/bin/herdr "$ref" --version; then
+              echo "::error::$ref is not runnable"
+              fail=1
+            fi
+            printf '::endgroup::\n'
+          done < <(jq -r '.images[].name' images/manifest.json)
+          exit "$fail"
