@@ -1,0 +1,52 @@
+id = "worktree-devcontainer"
+name = "Worktree Dev Container"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Spin up a dev container for new Herdr worktrees and attach to it as a saved SSH machine"
+platforms = ["linux", "macos"]
+
+# Fires after Herdr has already created the worktree and opened its workspace.
+# The plugin asks, in its own overlay, whether this worktree should get a container.
+[[events]]
+on = "worktree.created"
+command = ["bash", "bin/wtdc", "hook-created"]
+
+# Fires after `herdr worktree remove` tore the checkout down.
+[[events]]
+on = "worktree.removed"
+command = ["bash", "bin/wtdc", "hook-removed"]
+
+[[startup]]
+command = ["bash", "bin/wtdc", "startup"]
+
+[[actions]]
+id = "provision"
+title = "Dev container: create for this worktree"
+contexts = ["workspace"]
+command = ["bash", "bin/wtdc", "action", "provision"]
+
+[[actions]]
+id = "status"
+title = "Dev container: status"
+contexts = ["global", "workspace"]
+command = ["bash", "bin/wtdc", "action", "status"]
+
+[[actions]]
+id = "teardown"
+title = "Dev container: destroy for this worktree"
+contexts = ["workspace"]
+command = ["bash", "bin/wtdc", "action", "teardown"]
+
+# The yes/no checkbox shown right after a worktree is created.
+[[panes]]
+id = "prompt"
+title = "Dev container?"
+placement = "overlay"
+command = ["bash", "panes/prompt.sh"]
+
+# Streams `devcontainer up` / teardown output in a normal tab.
+[[panes]]
+id = "build"
+title = "Dev container"
+placement = "tab"
+command = ["bash", "panes/build.sh"]

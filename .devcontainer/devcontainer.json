@@ -1,0 +1,27 @@
+{
+  // Dev container for developing the worktree-devcontainer plugin itself.
+  //
+  // Deliberately minimal: it is the fixture the plugin's tests run against, so
+  // everything the plugin is supposed to add (the sshd feature, the published
+  // SSH port, the herdr install, the authorized_keys entry) is left out and
+  // gets injected into the merged copy at provision time.
+  "name": "herdr-worktree-devcontainer",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  "features": {
+    // What the plugin adds, for reference. Do not add it here: the plugin
+    // injects it, and duplicating it would make the fixture unrepresentative.
+    // "ghcr.io/devcontainers/features/sshd:1": {}
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+
+  // The plugin rewrites this into a single string chained with &&, because the
+  // devcontainer CLI joins array items with a space and execs the result.
+  "postCreateCommand": "echo 'worktree-devcontainer dev container ready'",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["timonwong.shellcheck", "foxundermoon.shell-format"]
+    }
+  }
+}

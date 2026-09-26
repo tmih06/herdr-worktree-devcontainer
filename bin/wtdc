@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+# worktree-devcontainer
+#
+#   hook-created            worktree.created event
+#   hook-removed            worktree.removed event
+#   startup                 [[startup]] hook
+#   action <name>           manifest action entrypoint
+#   provision <worktree> [workspace] [label]
+#   teardown  <worktree>
+#   status
+#   selftest                offline checks, no docker/devcontainer needed
+
+set -euo pipefail
+
+WTDC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/remote.sh
+. "$WTDC_ROOT/lib/remote.sh"
+
+# ---------------------------------------------------------------- utilities
+
+slugify() { wtdc::slug "$1"; }
+
+label_for() {
+  local slug="$1"
+  printf '%s-%s' "$WTDC_MACHINE_LABEL_PREFIX" "$slug"
+}
+
+# Machine labels and ssh aliases have to be unique, but distinct worktree
+# labels can slugify to the same string ("feat/a" and "feat-a"). Disambiguate
+# with a short hash of the checkout path only when a clash actually exists.
+unique_slug() {
+  local base="$1" checkout="$2" clash suffix
+  clash="$(state::list | jq -r --arg s "$base" --arg c "$checkout" \
+    'select(.slug == $s and .checkout_path != $c) | .slug' | head -1)"
+  if [ -z "$clash" ]; then
+    printf '%s' "$base"
+    return 0
+  fi
+  suffix="$(printf '%s' "$checkout" | cksum | cut -d' ' -f1 | cut -c1-6)"
+  printf '%s-%s' "$base" "$suffix"
+}
+
+# Open the streaming build pane for a worktree. Everything slow happens there
+# so the overlay prompt and the herdr UI stay responsive.
+open_build_pane() {
+  local mode="$1" checkout="$2" workspace="${3:-}" label="${4:-}"
+  local args=(
+    plugin pane open
+    --plugin "$HERDR_PLUGIN_ID"
+    --entrypoint build
+    --placement tab
+    --cwd "$checkout"
+    --env "WTDC_MODE=$mode"
+    --env "WTDC_CHECKOUT=$checkout"
+    --env "WTDC_LABEL=$label"
+    --focus
+  )
+  [ -n "$workspace" ] && args+=(--workspace "$workspace")
+  wtdc::herdr "${args[@]}" >/dev/null 2>&1 || wtdc::warn "could not open the build pane"
+}
+
+open_prompt_pane() {
+  local checkout="$1" workspace="${2:-}" label="${3:-}" repo="${4:-}"
+  local args=(
+    plugin pane open
+    --plugin "$HERDR_PLUGIN_ID"
+    --entrypoint prompt
+    --placement overlay
+    --env "WTDC_CHECKOUT=$checkout"
+    --env "WTDC_WORKSPACE=$workspace"
+    --env "WTDC_LABEL=$label"
+    --env "WTDC_REPO=$repo"
+  )
+  [ -n "$workspace" ] && args+=(--workspace "$workspace")
+  wtdc::herdr "${args[@]}" >/dev/null 2>&1 || wtdc::warn "could not open the prompt pane"
+}
+
+require_config() {
+  wtdc::require_host_tools
+  local checkout="$1"
+  [ -d "$checkout" ] || wtdc::die "worktree path does not exist: $checkout"
+  dc::find_config "$checkout" >/dev/null ||
+    wtdc::die "no devcontainer config in $checkout (looked for: $WTDC_CONFIG_CANDIDATES)"
+}
+
+# ---------------------------------------------------------------- provision
+
+do_provision() {
+  local checkout="$1" workspace="${2:-}" label="${3:-}"
+  [ -n "$label" ] || label="$(basename "$checkout")"
+
+  require_config "$checkout"
+
+  local slug src merged pubkey
+  slug="$(unique_slug "$(slugify "$label")" "$checkout")"
+  src="$(dc::find_config "$checkout")"
+  merged="$(dc::merged_path_for "$src")"
+
+  wtdc::step "Preparing dev container for $label"
+  wtdc::detail "worktree   $checkout"
+  wtdc::detail "config     $src"
+  wtdc::detail "merged     $merged"
+
+  pubkey="$(remote::ensure_key)"
+  if ! dc::build_merged "$src" "$merged" "$pubkey"; then
+    if grep -q 'dockerComposeFile' "$src" 2>/dev/null; then
+      wtdc::die "$src uses dockerComposeFile, so the SSH port cannot be published via runArgs.
+   Use a compose-based config with an explicit 'ports:' mapping for sshd, or
+   publish the port yourself and set WTDC_EXTRA_MOUNTS, then re-run."
+    fi
+    # Diagnose from the source config, since the merged output may not exist.
+    local plain
+    plain="$(mktemp)"
+    if node "$WTDC_ROOT/bin/jsonc2json.js" "$src" "$plain" 2>/dev/null &&
+      [ "$(jq -r '(.postCreateCommand // null) | type' "$plain" 2>/dev/null)" = object ]; then
+      rm -f "$plain"
+      wtdc::die "$src uses the object form of postCreateCommand, which cannot be
+   merged without changing its meaning. Convert it to a string or an array of
+   strings and re-run."
+    fi
+    rm -f "$plain"
+    wtdc::die "could not merge $src into $merged (see the error above)"
+  fi
+
+  # Persist the merged config path before the slow work, so a crash during the
+  # image build still leaves teardown able to find and clean it up.
+  state::set "$checkout" "$(jq -n \
+    --arg label "$label" \
+    --arg slug "$slug" \
+    --arg merged "$merged" \
+    --arg src "$src" \
+    --arg alias "$(label_for "$slug" | sed 's/^/herdr-/')" \
+    '{label:$label, slug:$slug, merged_config:$merged, source_config:$src,
+      ssh_alias:$alias, container_id:"", machine_id:"",
+      remote_workspace:"", endpoint_kind:""}')"
+
+  wtdc::step "Building and starting the container (this can take a while)"
+  local up_out cid remote_ws
+  up_out="$(dc::up "$checkout" "$merged")"
+  # dc::up emits "<container id>\n<remote workspace folder>". Parse without a
+  # subprocess: `cut -f2` on a single line exits non-zero, which pipefail turns
+  # into a fatal error under set -e.
+  if [ "$up_out" = "${up_out%%$'\n'*}" ]; then
+    cid="$up_out"
+    remote_ws=""
+  else
+    cid="${up_out%%$'\n'*}"
+    remote_ws="${up_out#*$'\n'}"
+  fi
+  wtdc::ok "container up: ${cid:0:12}"
+
+  local user host port kind endpoint_line
+  user="$(remote::container_user "$cid")"
+  if ! endpoint_line="$(remote::endpoint "$cid" "$WTDC_SSH_PORT")"; then
+    wtdc::die "container has no reachable ssh port. On Docker Desktop the container
+   IP is not routable from the host, so the SSH port must be published."
+  fi
+  IFS=$'\t' read -r host port kind <<<"$endpoint_line"
+  wtdc::ok "ssh endpoint: $user@$host:$port ($kind)"
+
+  state::patch "$checkout" '.entries[$k].container_id = $cid
+    | .entries[$k].ssh_host = $host
+    | .entries[$k].ssh_port = $port
+    | .entries[$k].ssh_user = $user
+    | .entries[$k].endpoint_kind = $kind
+    | .entries[$k].remote_workspace = $rws' \
+    --arg k "$checkout" --arg cid "$cid" --arg host "$host" --arg port "$port" \
+    --arg user "$user" --arg kind "$kind" --arg rws "$remote_ws"
+
+  local alias
+  alias="$(state::get "$checkout" | jq -r '.ssh_alias')"
+  remote::rewrite_ssh_config
+
+  wtdc::step "Waiting for sshd in the container"
+  if ! remote::wait_ssh "$alias" "$WTDC_READY_TIMEOUT"; then
+    wtdc::die "sshd never became reachable at $alias within ${WTDC_READY_TIMEOUT}s.
+   last ssh error: ${WTDC_SSH_LAST_ERROR:-unknown}
+   inspect it with: docker exec -it ${cid:0:12} journalctl -u ssh --no-pager"
+  fi
+  wtdc::ok "sshd is answering"
+
+  wtdc::step "Checking the Herdr install inside the container"
+  local container_herdr_version
+  if ! container_herdr_version="$(remote::ensure_container_herdr "$cid")"; then
+    wtdc::die "herdr is not installed inside the container.
+   postCreateCommand should install it. Re-run with WTDC_CONTAINER_INSTALL set
+   to a command that works in your base image, or install it in your image."
+  fi
+  wtdc::detail "$container_herdr_version"
+
+  wtdc::step "Starting the Herdr server inside the container"
+  if ! remote::start_container_server "$cid" "$WTDC_REMOTE_SESSION"; then
+    wtdc::die "the container-side herdr server did not come up.
+   Inspect it with: docker exec -it ${cid:0:12} cat /tmp/herdr-server.log"
+  fi
+
+  wtdc::step "Saving the SSH machine in Herdr"
+  local machine_label machine_id
+  machine_label="$(label_for "$slug")"
+  machine_id="$(remote::add_machine "$alias" "$machine_label")"
+  [ -n "$machine_id" ] || wtdc::die "herdr machine add did not produce a saved machine"
+  wtdc::ok "machine saved: $machine_label ($machine_id)"
+
+  state::patch "$checkout" \
+    '.entries[$k].machine_id = $mid | .entries[$k].machine_label = $mlabel' \
+    --arg k "$checkout" --arg mid "$machine_id" --arg mlabel "$machine_label"
+
+  remote::open_remote_workspace "$machine_id" "$remote_ws" "$machine_label"
+
+  printf '\n'
+  wtdc::ok "$label is running in a dev container"
+  wtdc::detail "switch to machine '$machine_label' in the sidebar to work inside it"
+  wtdc::detail "remote workspace: ${remote_ws:-<default>}"
+}
+
+# ---------------------------------------------------------------- teardown
+
+do_teardown() {
+  local checkout="$1" force="${2:-0}"
+  local entry
+  entry="$(state::get "$checkout")"
+  if [ -z "$entry" ]; then
+    wtdc::info "no dev container tracked for $checkout"
+    return 0
+  fi
+
+  local cid machine_id merged
+  cid="$(printf '%s' "$entry" | jq -r '.container_id // empty')"
+  machine_id="$(printf '%s' "$entry" | jq -r '.machine_id // empty')"
+  merged="$(printf '%s' "$entry" | jq -r '.merged_config // empty')"
+
+  wtdc::step "Removing the saved machine profile"
+  remote::remove_machine "$machine_id"
+
+  if [ "$WTDC_KEEP_CONTAINER" = "1" ] && [ "$force" != "1" ]; then
+    wtdc::warn "WTDC_KEEP_CONTAINER=1: leaving container ${cid:0:12} running"
+  else
+    wtdc::step "Destroying the container"
+    [ -n "$cid" ] || wtdc::warn "no container id recorded; skipping container removal"
+    if [ -n "$checkout" ] && [ -d "$checkout" ]; then
+      dc::down "$checkout" "$merged" "$cid"
+    elif [ -n "$cid" ]; then
+      docker rm -f "$cid" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # The merged config lives under the plugin state dir, so it can be removed
+  # even after the worktree itself is already gone.
+  if [ -n "$merged" ] && [ -f "$merged" ]; then
+    rm -rf "$(dirname "$merged")"
+  fi
+
+  state::del "$checkout"
+  remote::rewrite_ssh_config
+  wtdc::ok "torn down"
+}
+
+# ---------------------------------------------------------------- status
+
+do_status() {
+  wtdc::load_config
+  local any=0
+  printf '%sdev containers%s\n' "$WTDC_C_BLUE" "$WTDC_C_RESET"
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    any=1
+    local checkout cid alive machine
+    checkout="$(printf '%s' "$entry" | jq -r '.checkout_path')"
+    cid="$(printf '%s' "$entry" | jq -r '.container_id // empty')"
+    machine="$(printf '%s' "$entry" | jq -r '.machine_label // .label')"
+    if [ -n "$cid" ] && docker ps -q --filter "id=$cid" | grep -q .; then
+      alive="${WTDC_C_GREEN}running${WTDC_C_RESET}"
+    else
+      alive="${WTDC_C_YELLOW}not running${WTDC_C_RESET}"
+    fi
+    printf '  %-24s %-22s %s\n' "$machine" "$alive" "$checkout"
+  done < <(state::list)
+  [ "$any" = "1" ] || printf '  %snone tracked%s\n' "$WTDC_C_DIM" "$WTDC_C_RESET"
+}
+
+# ---------------------------------------------------------------- hooks
+
+hook_created() {
+  wtdc::load_config
+  [ "$WTDC_ENABLED" = "1" ] || exit 0
+
+  local event="${HERDR_PLUGIN_EVENT_JSON:-}"
+  [ -n "$event" ] || exit 0
+
+  local checkout workspace label repo
+  checkout="$(wtdc::event_worktree_path "$event")"
+  workspace="$(wtdc::event_workspace_id "$event")"
+  label="$(wtdc::event_worktree_label "$event")"
+  repo="$(wtdc::event_repo_name "$event")"
+  [ -n "$checkout" ] || exit 0
+  [ -n "$label" ] || label="$(basename "$checkout")"
+
+  state::has "$checkout" && exit 0
+
+  if ! dc::find_config "$checkout" >/dev/null; then
+    wtdc::info "no devcontainer config in $checkout; skipping"
+    exit 0
+  fi
+
+  case "$WTDC_ON_CREATE" in
+    never) exit 0 ;;
+    auto)  open_build_pane provision "$checkout" "$workspace" "$label" ;;
+    *)     open_prompt_pane "$checkout" "$workspace" "$label" "$repo" ;;
+  esac
+}
+
+hook_removed() {
+  wtdc::load_config
+  [ "$WTDC_ENABLED" = "1" ] || exit 0
+
+  local event="${HERDR_PLUGIN_EVENT_JSON:-}"
+  [ -n "$event" ] || exit 0
+
+  local checkout
+  checkout="$(wtdc::event_worktree_path "$event")"
+  [ -n "$checkout" ] || exit 0
+  state::has "$checkout" || exit 0
+
+  do_teardown "$checkout"
+}
+
+do_startup() {
+  wtdc::load_config
+  [ "$WTDC_ENABLED" = "1" ] || exit 0
+  wtdc::have docker || exit 0
+
+  local tracked=0 running=0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    tracked=$((tracked + 1))
+    local cid
+    cid="$(printf '%s' "$entry" | jq -r '.container_id // empty')"
+    if [ -n "$cid" ] && docker ps -q --filter "id=$cid" | grep -q .; then
+      running=$((running + 1))
+    fi
+  done < <(state::list)
+
+  wtdc::info "dev containers tracked: $tracked, running: $running"
+}
+
+# ---------------------------------------------------------------- actions
+
+resolve_action_worktree() {
+  # Prefer the worktree provenance of the workspace that invoked the action.
+  local ctx="${HERDR_PLUGIN_CONTEXT_JSON:-}"
+  if [ -n "$ctx" ]; then
+    local path
+    path="$(printf '%s' "$ctx" | jq -r '.worktree.checkout_path // empty' 2>/dev/null || true)"
+    [ -n "$path" ] && { printf '%s' "$path"; return 0; }
+  fi
+  local ws="${HERDR_WORKSPACE_ID:-}"
+  if [ -n "$ws" ]; then
+    local path
+    path="$(wtdc::herdr workspace get "$ws" 2>/dev/null |
+      jq -r '.result.workspace.worktree.checkout_path // empty' 2>/dev/null || true)"
+    [ -n "$path" ] && { printf '%s' "$path"; return 0; }
+  fi
+  return 1
+}
+
+action_provision() {
+  wtdc::load_config
+  local checkout
+  checkout="$(resolve_action_worktree)" ||
+    wtdc::die "this action must be invoked from a worktree workspace"
+  local label
+  label="$(wtdc::herdr workspace get "${HERDR_WORKSPACE_ID:-}" 2>/dev/null |
+    jq -r '.result.workspace.label // empty' 2>/dev/null || true)"
+  [ -n "$label" ] || label="$(basename "$checkout")"
+  do_provision "$checkout" "${HERDR_WORKSPACE_ID:-}" "$label"
+}
+
+action_teardown() {
+  wtdc::load_config
+  local checkout
+  checkout="$(resolve_action_worktree)" ||
+    wtdc::die "this action must be invoked from a worktree workspace"
+  do_teardown "$checkout"
+}
+
+action_status() { do_status; }
+
+# ---------------------------------------------------------------- selftest
+
+# Exercises the pure logic (JSONC stripping, config merge, state, ssh config
+# projection) with no docker and no devcontainer CLI.
+do_selftest() {
+  local failures=0
+  # Global so the EXIT trap can still see it after this function returns.
+  WTDC_SELFTEST_TMP="$(mktemp -d)"
+  trap 'rm -rf "${WTDC_SELFTEST_TMP:-}"' EXIT
+  local tmp="$WTDC_SELFTEST_TMP"
+
+  check() {
+    local name="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+      printf '  %sPASS%s %s\n' "$WTDC_C_GREEN" "$WTDC_C_RESET" "$name"
+    else
+      printf '  %sFAIL%s %s\n      expected: %s\n      actual:   %s\n' \
+        "$WTDC_C_RED" "$WTDC_C_RESET" "$name" "$expected" "$actual"
+      failures=$((failures + 1))
+    fi
+  }
+
+  wtdc::load_config
+  export HERDR_PLUGIN_STATE_DIR="$tmp/state"
+  export HERDR_PLUGIN_CONFIG_DIR="$tmp/config"
+  mkdir -p "$HERDR_PLUGIN_STATE_DIR" "$HERDR_PLUGIN_CONFIG_DIR"
+
+  printf 'jsonc stripping\n'
+  cat >"$tmp/dc.json" <<'JSONC'
+{
+  // the upstream image
+  "name": "demo",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  /* block
+     comment */
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+  "postCreateCommand": "echo 'https://example.com//not-a-comment'",
+  "runArgs": ["--init"],
+}
+JSONC
+  check 'comments removed, url kept' 'ok' \
+    "$(node "$WTDC_ROOT/bin/jsonc2json.js" "$tmp/dc.json" >"$tmp/dc.json.out" &&
+       jq -r 'if (.image | test("base:ubuntu")) and (.postCreateCommand | test("//not-a-comment")) then "ok" else "bad" end' \
+         "$tmp/dc.json.out")"
+
+  printf 'config merge\n'
+  check 'sshd feature added' 'true' \
+    "$(dc::build_merged "$tmp/dc.json" "$tmp/merged.json" "ssh-ed25519 AAAA test" >/dev/null 2>&1 &&
+       jq -r --arg f "$WTDC_SSH_FEATURE" '.features | has($f)' "$tmp/merged.json")"
+  check 'ssh port published' '127.0.0.1::2222' \
+    "$(jq -r '.runArgs[-1]' "$tmp/merged.json")"
+  check 'publish flag added once' '1' \
+    "$(jq -r '[.runArgs[] | select(. == "--publish")] | length' "$tmp/merged.json")"
+  check 'existing runArgs preserved' '--init' \
+    "$(jq -r '.runArgs[0]' "$tmp/merged.json")"
+  check 'postCreateCommand is a single string' 'string' \
+    "$(jq -r '.postCreateCommand | type' "$tmp/merged.json")"
+  check 'upstream postCreateCommand kept' 'true' \
+    "$(jq -r '.postCreateCommand | test("not-a-comment")' "$tmp/merged.json")"
+  check 'authorized_keys written' 'true' \
+    "$(jq -r '.postCreateCommand | test("authorized_keys")' "$tmp/merged.json")"
+  check 'herdr install injected' 'true' \
+    "$(jq -r '.postCreateCommand | test("herdr.dev/install.sh")' "$tmp/merged.json")"
+  check 'upstream command chained with &&' 'true' \
+    "$(jq -r '.postCreateCommand | test("not-a-comment.* && mkdir")' "$tmp/merged.json")"
+
+  printf 'array postCreateCommand is joined, not appended as elements\n'
+  jq '.postCreateCommand = ["apt-get update", "apt-get install -y jq"]' \
+    "$tmp/dc.json.out" >"$tmp/dcarr.json"
+  dc::build_merged "$tmp/dcarr.json" "$tmp/mergedarr.json" "k" >/dev/null
+  check 'array joined with &&' 'true' \
+    "$(jq -r '.postCreateCommand | test("^apt-get update && apt-get install -y jq && ")' "$tmp/mergedarr.json")"
+
+  printf 'object postCreateCommand is rejected\n'
+  jq '.postCreateCommand = {"server": "npm start"}' "$tmp/dc.json.out" >"$tmp/dcobj.json"
+  if dc::build_merged "$tmp/dcobj.json" "$tmp/mergedobj.json" "k" >/dev/null 2>&1; then
+    check 'object form rejected' 'rejected' 'accepted'
+  else
+    check 'object form rejected' 'rejected' 'rejected'
+  fi
+
+  printf 'existing feature is not clobbered\n'
+  jq '.features["ghcr.io/devcontainers/features/sshd:1"] = {"version":"1"}' \
+    "$tmp/dc.json.out" >"$tmp/dc2.json"
+  dc::build_merged "$tmp/dc2.json" "$tmp/merged2.json" "ssh-ed25519 AAAA test" >/dev/null
+  check 'user sshd options preserved' '1' \
+    "$(jq -r '.features["ghcr.io/devcontainers/features/sshd:1"].version' "$tmp/merged2.json")"
+
+  printf 'compose config is rejected\n'
+  jq '.dockerComposeFile = "docker-compose.yml"' "$tmp/dc.json.out" >"$tmp/dc3.json"
+  if dc::build_merged "$tmp/dc3.json" "$tmp/merged3.json" "k" >/dev/null 2>&1; then
+    check 'compose rejected' 'rejected' 'accepted'
+  else
+    check 'compose rejected' 'rejected' 'rejected'
+  fi
+
+  printf 'state store\n'
+  state::set "/tmp/wt-a" '{"label":"devc-a","ssh_alias":"herdr-devc-a","ssh_host":"127.0.0.1","ssh_port":"32771","ssh_user":"vscode","container_id":"abc"}'
+  state::set "/tmp/wt-b" '{"label":"devc-b","ssh_alias":"herdr-devc-b","ssh_host":"127.0.0.1","ssh_port":"32772","ssh_user":"vscode","container_id":"def"}'
+  check 'lookup by path' 'devc-a' "$(state::get "/tmp/wt-a" | jq -r '.label')"
+  check 'lookup by container' '/tmp/wt-b' "$(state::find_by_container "def" | jq -r '.checkout_path')"
+  check 'list count' '2' "$(state::list | wc -l | tr -d ' ')"
+  state::patch "/tmp/wt-a" '.entries[$k].machine_id = $m' --arg k "/tmp/wt-a" --arg m "m1"
+  check 'patch applied' 'm1' "$(state::get "/tmp/wt-a" | jq -r '.machine_id')"
+  state::del "/tmp/wt-a"
+  check 'delete applied' '' "$(state::get "/tmp/wt-a")"
+  check 'other entry survived' '1' "$(state::list | wc -l | tr -d ' ')"
+
+  printf 'ssh config projection\n'
+  HOME="$tmp/home"
+  mkdir -p "$HOME"
+  remote::rewrite_ssh_config
+  local managed="$HOME/.ssh/config.d/$SSH_CONFIG_DIRNAME"
+  check 'include added to ssh config' '1' "$(grep -cF 'Include ~/.ssh/config.d/*' "$HOME/.ssh/config")"
+  check 'existing ssh config not rewritten' '1' "$(wc -l <"$HOME/.ssh/config")"
+  check 'host block written' '1' "$(grep -c '^Host herdr-devc-b$' "$managed")"
+  check 'port from state' 'Port 32772' \
+    "$(grep -A3 '^Host herdr-devc-b$' "$managed" | grep '^  Port ' | sed 's/^ *//')"
+  check 'user from state' 'User vscode' \
+    "$(grep -A3 '^Host herdr-devc-b$' "$managed" | grep '^  User ' | sed 's/^ *//')"
+  state::del "/tmp/wt-b"
+  remote::rewrite_ssh_config
+  check 'projection follows state deletions' '0' "$(grep -c '^Host ' "$managed" || true)"
+
+  printf 'slugs\n'
+  check 'branch slug' 'feat-x-1' "$(wtdc::slug 'feat/X-1')"
+  check 'empty slug' 'wt' "$(wtdc::slug '///')"
+
+  printf 'slug collisions\n'
+  state::set "/tmp/wt-x" '{"label":"feat/a","slug":"feat-a"}'
+  check 'no clash keeps the plain slug' 'solo' "$(unique_slug 'solo' '/tmp/wt-y')"
+  check 'clash gets a path-derived suffix' 'yes' \
+    "$(case "$(unique_slug 'feat-a' '/tmp/wt-x2')" in feat-a) echo no ;; feat-a-??????) echo yes ;; *) echo no ;; esac)"
+  check 'same worktree keeps its own slug' 'feat-a' "$(unique_slug 'feat-a' '/tmp/wt-x')"
+  check 'suffix is stable for the same path' \
+    "$(unique_slug 'feat-a' '/tmp/wt-x2')" "$(unique_slug 'feat-a' '/tmp/wt-x2')"
+  state::del "/tmp/wt-x"
+  printf 'event payload parsing\n'
+  local evt='{"event":"worktree.created","data":{"workspace":{"workspace_id":"w7","worktree":{"repo_root":"/repo","repo_name":"repo","checkout_path":"/wt/feat"}},"worktree":{"path":"/wt/feat","label":"feat"}}}'
+  check 'worktree path' '/wt/feat' "$(wtdc::event_worktree_path "$evt")"
+  check 'workspace id' 'w7' "$(wtdc::event_workspace_id "$evt")"
+  check 'worktree label' 'feat' "$(wtdc::event_worktree_label "$evt")"
+  check 'repo name' 'repo' "$(wtdc::event_repo_name "$evt")"
+
+  printf '\n'
+  if [ "$failures" -eq 0 ]; then
+    printf '%sall checks passed%s\n' "$WTDC_C_GREEN" "$WTDC_C_RESET"
+  else
+    printf '%s%d check(s) failed%s\n' "$WTDC_C_RED" "$failures" "$WTDC_C_RESET"
+  fi
+  return "$failures"
+}
+
+# ---------------------------------------------------------------- dispatch
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    hook-created) hook_created ;;
+    hook-removed) hook_removed ;;
+    startup)      do_startup ;;
+    provision)    wtdc::load_config; do_provision "${1:?worktree path required}" "${2:-}" "${3:-}" ;;
+    teardown)     wtdc::load_config; do_teardown "${1:?worktree path required}" "${2:-0}" ;;
+    status)       do_status ;;
+    selftest)     do_selftest ;;
+    action)
+      wtdc::load_config
+      case "${1:-}" in
+        provision) action_provision ;;
+        teardown)  action_teardown ;;
+        status)    action_status ;;
+        *) wtdc::die "unknown action: ${1:-}" ;;
+      esac
+      ;;
+    -h|--help|help)
+      sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+      ;;
+    *) wtdc::die "unknown command: $cmd (try: $0 help)" ;;
+  esac
+}
+
+main "$@"

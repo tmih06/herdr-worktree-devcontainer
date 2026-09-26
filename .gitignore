@@ -1,0 +1,5 @@
+# Plugin-generated state lives in HERDR_PLUGIN_STATE_DIR, never in the repo,
+# but keep these out if anyone runs the scripts from a checkout.
+state/
+*.log
+.DS_Store
