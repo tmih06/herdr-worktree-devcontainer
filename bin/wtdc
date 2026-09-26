@@ -20,9 +20,24 @@ WTDC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 slugify() { wtdc::slug "$1"; }
 
+# <prefix>-<project>-<worktree>. The project matters because worktree labels
+# repeat across repos, and the plugin id already says the workspace host.
 label_for() {
-  local slug="$1"
-  printf '%s-%s' "$WTDC_MACHINE_LABEL_PREFIX" "$slug"
+  local slug="$1" project="${2:-}"
+  if [ -n "$project" ]; then
+    printf '%s-%s-%s' "$WTDC_MACHINE_LABEL_PREFIX" "$project" "$slug"
+  else
+    printf '%s-%s' "$WTDC_MACHINE_LABEL_PREFIX" "$slug"
+  fi
+}
+
+# The project a worktree belongs to. For a linked worktree the git common dir
+# points back at the main checkout, so this survives the worktree's own name.
+project_for() {
+  local checkout="$1" gd
+  gd="$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  [ -n "$gd" ] || return 0
+  wtdc::slug "$(basename "$(dirname "$gd")")"
 }
 
 # Machine labels and ssh aliases have to be unique, but distinct worktree
@@ -115,13 +130,15 @@ do_provision() {
 
   require_config "$checkout"
 
-  local slug src merged pubkey
+  local slug src merged pubkey project
+  project="$(project_for "$checkout")"
   slug="$(unique_slug "$(slugify "$label")" "$checkout")"
   src="$(dc::find_config "$checkout")"
   merged="$(dc::merged_path_for "$src")"
 
   wtdc::step "Preparing dev container for $label"
   wtdc::detail "worktree   $checkout"
+  wtdc::detail "project    ${project:-unknown}"
   wtdc::detail "config     $src"
   wtdc::detail "merged     $merged"
 
@@ -153,10 +170,11 @@ do_provision() {
     --arg slug "$slug" \
     --arg merged "$merged" \
     --arg src "$src" \
-    --arg alias "$(label_for "$slug" | sed 's/^/herdr-/')" \
-    '{label:$label, slug:$slug, merged_config:$merged, source_config:$src,
-      ssh_alias:$alias, container_id:"", machine_id:"",
-      remote_workspace:"", endpoint_kind:""}')"
+    --arg alias "herdr-$(label_for "$slug" "$project")" \
+    --arg project "$project" \
+    '{label:$label, slug:$slug, project:$project, merged_config:$merged,
+      source_config:$src, ssh_alias:$alias, container_id:"", machine_id:"",
+      container_name:"", remote_workspace:"", endpoint_kind:""}')"
 
   wtdc::step "Building and starting the container (this can take a while)"
   local up_out cid remote_ws
@@ -171,9 +189,19 @@ do_provision() {
     cid="${up_out%%$'\n'*}"
     remote_ws="${up_out#*$'\n'}"
   fi
-  wtdc::ok "container up: ${cid:0:12}"
 
-  local user host port kind endpoint_line
+  local user host port kind endpoint_line cname
+  # The devcontainer CLI has no --name, so docker picks one ("admiring_volhard")
+  # and `docker ps` tells you nothing about which project a container is for.
+  # Renaming is the only lever, and it works on a running container.
+  cname="herdr-$(label_for "$slug" "$project")"
+  if docker rename "$cid" "$cname" 2>/dev/null; then
+    state::patch "$checkout" '.entries[$k].container_name = $n' \
+      --arg k "$checkout" --arg n "$cname"
+  else
+    wtdc::warn "could not rename the container to $cname (name already in use?)"
+  fi
+  wtdc::ok "container up: $cname"
   user="$(remote::container_user "$cid")"
   if ! endpoint_line="$(remote::endpoint "$cid" "$WTDC_SSH_PORT")"; then
     wtdc::die "container has no reachable ssh port. On Docker Desktop the container
@@ -221,7 +249,7 @@ $(remote::container_herdr_install_log "$cid" | sed 's/^/     /')
 
   wtdc::step "Saving the SSH machine in Herdr"
   local machine_label machine_id
-  machine_label="$(label_for "$slug")"
+  machine_label="$(label_for "$slug" "$project")"
   machine_id="$(remote::add_machine "$alias" "$machine_label")"
   [ -n "$machine_id" ] || wtdc::die "herdr machine add did not produce a saved machine"
   wtdc::ok "machine saved: $machine_label ($machine_id)"

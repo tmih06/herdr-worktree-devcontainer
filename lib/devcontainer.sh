@@ -71,6 +71,7 @@ dc::build_merged() {
     --arg prebuilt "$(dc::prebuilt_image)" \
     --arg ruser "${WTDC_IMAGE_REMOTE_USER:-}" \
     --arg plugindir "$(dc::plugin_share_dir)" \
+    --arg skipuid "$(dc::image_uid_matches_host && echo yes || echo no)" \
     '
     # The Dev Container CLI joins postCreateCommand array items with a space and
     # execs the result as one command line, so an array is NOT a safe way to
@@ -96,6 +97,10 @@ dc::build_merged() {
        then .features = {} else . end)
     | (if $prebuilt != "" then .image = $prebuilt else . end)
     | (if $prebuilt != "" and ($ruser | length) > 0 then .remoteUser = $ruser else . end)
+    # Skip the uid remap only when the image already ships the host uid, and
+    # only for a prebuilt image. Getting this wrong means an unwritable
+    # workspace, so never guess it from anything but the image label.
+    | (if $prebuilt != "" and $skipuid == "yes" then .updateRemoteUserUID = false else . end)
     | (if (.dockerComposeFile // null) != null then
          error("compose-based devcontainer configs cannot take runArgs")
        else . end)
@@ -210,6 +215,28 @@ dc::prebuilt_image() {
     return 0
   fi
   printf '%s' "$ref"
+}
+
+# Does this image need the uid remap at all?
+#
+# The CLI derives a `vsc-<folder>-<hash>-uid` copy of the image whose remote
+# user matches the host uid, so bind-mounted files are writable. That copy is
+# a full image: when the uids already agree it is a pointless 300MB duplicate,
+# and its updateUID script silently does nothing anyway.
+#
+# The templates label themselves with the uid they ship, so the answer is one
+# cheap `docker image inspect` instead of a container run. Any host that is not
+# uid 1000 still gets the remap, which now actually works because the image
+# leaves uid 1000 free.
+dc::image_uid_matches_host() {
+  local ref label_uid host_uid
+  ref="$(dc::prebuilt_image)"
+  [ -n "$ref" ] || return 1
+  label_uid="$(docker image inspect "$ref" \
+    --format '{{index .Config.Labels "devcontainer.remote.uid"}}' 2>/dev/null || true)"
+  [ -n "$label_uid" ] || return 1
+  host_uid="$(id -u)"
+  [ "$label_uid" = "$host_uid" ]
 }
 
 # Pull before `up` so the first provision of a template does not pay for the

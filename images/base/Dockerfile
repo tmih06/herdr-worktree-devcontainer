@@ -39,15 +39,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # assuming a name, so this is only a default.
 ARG USER_NAME=dev
 
-# No fixed uid: ubuntu:24.04 already ships a `ubuntu` user at 1000, so
-# hardcoding 1000 fails the build. Let useradd pick the next free one.
+# uid 1000, deliberately, and `ubuntu` has to move out of the way first.
+#
+# The devcontainer CLI rewrites the image so the container user's uid matches
+# the host's, producing the `vsc-...-uid` copy. But its updateUID script
+# refuses to remap when some other user already holds the target uid:
+#
+#   elif [ "$OLD_UID" != "$NEW_UID" -a -n "$EXISTING_USER" ]; then
+#       echo "User with UID exists ($EXISTING_USER=$NEW_UID)."
+#
+# ubuntu:24.04 ships a `ubuntu` user at 1000, so the remap declined, the -uid
+# image was a byte-identical copy, and `dev` stayed 1001 while the bind mount
+# was owned by 1000. Nothing inside the container could be written.
+#
+# Giving `dev` uid 1000 and removing the squatter makes the remap a genuine
+# no-op on a uid-1000 host, and still correct on any other host, where it can
+# now actually do its job.
 RUN set -eux; \
-    groupadd "${USER_NAME}"; \
-    useradd -m -g "${USER_NAME}" -s /bin/bash "${USER_NAME}"; \
+    if getent passwd 1000 >/dev/null; then \
+      usermod -l "${USER_NAME}" -d "/home/${USER_NAME}" -m "$(getent passwd 1000 | cut -d: -f1)"; \
+    fi; \
+    getent group 1000 >/dev/null || groupadd -g 1000 "${USER_NAME}"; \
+    id -u "${USER_NAME}" >/dev/null 2>&1 || \
+      useradd -m -u 1000 -g 1000 -s /bin/bash "${USER_NAME}"; \
     mkdir -p /workspaces; \
     chown "${USER_NAME}:${USER_NAME}" /workspaces; \
     printf '%s\n' "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${USER_NAME}"; \
-    chmod 0440 "/etc/sudoers.d/90-${USER_NAME}"
+    chmod 0440 "/etc/sudoers.d/90-${USER_NAME}"; \
+    test "$(id -u "${USER_NAME}")" = "1000"
+
+# The plugin reads these labels to decide whether the uid remap is needed at
+# all, which is what keeps a useless 300MB -uid copy from being built.
+LABEL devcontainer.remote.user="${USER_NAME}" \
+      devcontainer.remote.uid="1000"
 
 # sshd: key-only, root allowed, host keys generated now rather than on boot.
 #

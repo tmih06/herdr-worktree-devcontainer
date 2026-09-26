@@ -51,6 +51,7 @@ git -C "$REPO" worktree add -q -b demo "$WT"
 
 cat >"$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
+echo "$*" >> "$WTDC_FAKE_STATE/docker_calls"
 case "$1 $2" in
   "ps -aq"|"ps -q")
     if [ "${3:-}" = "--filter" ] && [[ "${4:-}" == id=* || "${4:-}" == label=devcontainer.local_folder=* ]]; then
@@ -97,6 +98,11 @@ case "$1" in
       *"status server"*)      echo "server: running" ;;
       *)                      : ;;
     esac
+    exit 0 ;;
+  rename)
+    shift           # docker rename <old> <new>: the new name is the second arg
+    printf '%s\n' "$2" > "$WTDC_FAKE_STATE/container_name"
+    echo "$2"
     exit 0 ;;
   rm)
     rm -f "$WTDC_FAKE_STATE/container"
@@ -184,6 +190,7 @@ STUB
 chmod +x "$BIN"/*
 export WTDC_FAKE_STATE="$SANDBOX/fake"
 mkdir -p "$WTDC_FAKE_STATE"
+: > "$WTDC_FAKE_STATE/docker_calls"
 echo "deadbeefcafe" >"$WTDC_FAKE_STATE/container"
 
 # ---------------------------------------------------------------- run
@@ -224,7 +231,7 @@ expect 'machine id recorded' 'm1' \
   "$(jq -r '.entries["'"$WT"'"].machine_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect 'remote workspace recorded' '/workspaces/demo' \
   "$(jq -r '.entries["'"$WT"'"].remote_workspace' "$HERDR_PLUGIN_STATE_DIR/state.json")"
-expect 'machine label derived' 'devc-demo' "$(cat "$WTDC_FAKE_STATE/machine_label")"
+expect 'machine label carries project and worktree' 'devc-repo-demo' "$(cat "$WTDC_FAKE_STATE/machine_label")"
 
 step "handing the user over to the container"
 calls="$(cat "$WTDC_FAKE_STATE/herdr_calls")"
@@ -237,6 +244,10 @@ expect 'focus happens before the host workspace closes' 'yes' \
   "$(printf '%s' "$calls" | awk '/workspace focus/{f=NR} /workspace close/{c=NR} END{print (f && c && f<c) ? "yes" : "no"}')"
 expect_contains 'completion announced' 'notification show Dev container ready' "$calls"
 expect_contains 'completion used the done sound' '--sound done' "$calls"
+expect 'container renamed to project and worktree' 'herdr-devc-repo-demo' \
+  "$(cat "$WTDC_FAKE_STATE/container_name" 2>/dev/null)"
+expect 'project recorded in state' 'repo' \
+  "$(jq -r --arg k "$WT" '.entries[$k].project' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 
 step "sharing host state and refusing to recurse"
 merged_cfg="$(jq -r --arg k "$WT" '.entries[$k].merged_config' "$HERDR_PLUGIN_STATE_DIR/state.json")"
@@ -303,14 +314,14 @@ expect 'nothing generated inside the worktree' 'clean' \
 step "ssh config"
 managed="$HOME/.ssh/config.d/herdr-worktree-devcontainer"
 expect 'include present' '1' "$(grep -cF 'Include ~/.ssh/config.d/*' "$HOME/.ssh/config")"
-expect 'host block present' '1' "$(grep -c '^Host herdr-devc-demo$' "$managed")"
+expect 'host block present' '1' "$(grep -c '^Host herdr-devc-repo-demo$' "$managed")"
 expect 'port in ssh config' 'Port 49154' \
-  "$(grep -A3 '^Host herdr-devc-demo$' "$managed" | grep '^  Port' | sed 's/^ *//')"
+  "$(grep -A3 '^Host herdr-devc-repo-demo$' "$managed" | grep '^  Port' | sed 's/^ *//')"
 expect 'identity file wired' '1' "$(grep -c 'IdentityFile' "$managed")"
 expect 'known hosts isolated' '1' "$(grep -c 'UserKnownHostsFile' "$managed")"
 expect 'ssh actually dialled' '1' \
   "$([ -s "$WTDC_FAKE_STATE/ssh_calls" ] && echo 1 || echo 0)"
-expect_contains 'ssh used the managed alias' 'herdr-devc-demo' "$(cat "$WTDC_FAKE_STATE/ssh_calls")"
+expect_contains 'ssh used the managed alias' 'herdr-devc-repo-demo' "$(cat "$WTDC_FAKE_STATE/ssh_calls")"
 
 step "remote workspace opened"
 expect_contains 'workspace create forwarded to the machine' '--machine m1 workspace create' \
@@ -323,7 +334,7 @@ expect 'second provision is refused by the hook, not re-run here' '1' \
 
 step "status"
 status_out="$("$PLUGIN_ROOT/bin/wtdc" status 2>&1)"
-expect_contains 'status lists the machine' 'devc-demo' "$status_out"
+expect_contains 'status lists the machine' 'devc-repo-demo' "$status_out"
 expect_contains 'status reports running' 'running' "$status_out"
 
 step "teardown"
@@ -390,7 +401,7 @@ expect 'no pane opened' '0' "$(grep -c 'pane open' "$WTDC_FAKE_STATE/herdr_calls
 
 step "worktree.created is idempotent"
 reset_herdr_calls
-jq -n --arg k "$WT2" '{version:1,entries:{($k):{label:"second",machine_label:"devc-second"}}}' \
+jq -n --arg k "$WT2" '{version:1,entries:{($k):{label:"second",machine_label:"devc-repo-second"}}}' \
   >"$HERDR_PLUGIN_STATE_DIR/state.json"
 HERDR_PLUGIN_EVENT_JSON="$(event_for w10 "$WT2" second "$REPO")" \
   "$PLUGIN_ROOT/bin/wtdc" hook-created
@@ -436,7 +447,7 @@ rm_event="$(jq -n --arg ws w12 --arg wt "$WT4" '{
 HERDR_PLUGIN_EVENT_JSON="$rm_event" "$PLUGIN_ROOT/bin/wtdc" hook-removed
 expect 'removed worktree dropped from state' 'no' \
   "$(jq -r --arg k "$WT4" '.entries[$k] // "no"' "$HERDR_PLUGIN_STATE_DIR/state.json")"
-expect 'unrelated worktree left alone' 'devc-second' \
+expect 'unrelated worktree left alone' 'devc-repo-second' \
   "$(jq -r --arg k "$WT2" '.entries[$k].machine_label' "$HERDR_PLUGIN_STATE_DIR/state.json")"
 expect 'container destroyed by the removal hook' 'no' \
   "$([ -f "$WTDC_FAKE_STATE/container" ] && echo yes || echo no)"
