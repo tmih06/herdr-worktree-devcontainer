@@ -17,9 +17,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, insideContainer } from './../lib/wtdc/context.mjs';
-import { loadConfig } from './../lib/wtdc/config.mjs';
+import { loadConfig, seedUserConfig } from './../lib/wtdc/config.mjs';
 import { tryRun, have } from './../lib/wtdc/run.mjs';
 import { step, ok, info, detail, warn, die, notify } from './../lib/wtdc/ui.mjs';
+import { emit, phaseStart } from './../lib/wtdc/progress.mjs';
 import * as state from './../lib/wtdc/state.mjs';
 import * as dc from './../lib/wtdc/devcontainer.mjs';
 import * as herdr from './../lib/wtdc/herdr.mjs';
@@ -99,6 +100,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   const project = projectFor(checkout);
   const merged = dc.mergedPathFor(src);
 
+  emit('inspect', phaseStart('inspect') * 100, label);
   step(`Preparing dev container for ${label}`);
   detail(`worktree   ${checkout}`);
   detail(`project    ${project || 'unknown'}`);
@@ -116,6 +118,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
     detail(`image     ${prebuilt}`);
   }
 
+  emit('merge', phaseStart('merge') * 100, path.basename(merged));
   try {
     dc.buildMerged(src, merged, config);
   } catch (err) {
@@ -137,7 +140,9 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   });
 
   step('Building and starting the container (this can take a while)');
-  const up = dc.up(checkout, merged, config);
+  const up = dc.up(checkout, merged, config, (containerId) => {
+    emit('ready', phaseStart('ready') * 100, containerId ? containerId.slice(0, 12) : '');
+  });
   if (!up.containerId) die('devcontainer up did not report a container id');
 
   const cname = containerNameFor(slug, project);
@@ -150,6 +155,8 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   const remoteUser = up.remoteUser
     || (tryRun('docker', ['inspect', '-f', '{{.Config.User}}', up.containerId]).stdout || '').trim()
     || '';
+
+  emit('finish', phaseStart('finish') * 100, cname);
 
   state.patch(checkout, {
     container_id: up.containerId,
@@ -189,6 +196,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   }
 
   notify(`Dev container ready: ${label}`, 'the container terminal is attached', 'done');
+  emit('done', 100, cname);
   process.removeListener('exit', provisionFailed);
 }
 
@@ -252,18 +260,25 @@ function hookCreated() {
     return;
   }
 
+  if (config.WTDC_ON_CREATE === 'never') return;
+
   const env = {
     WTDC_CHECKOUT: checkout,
     WTDC_WORKSPACE: workspaceId,
     WTDC_LABEL: label,
     WTDC_REPO: repo,
+    // Captured here, before the prompt overlay exists: a pane opened untargeted
+    // resolves to the active pane, so afterwards the worktree's own shell and
+    // our own overlay are indistinguishable. The boot screen has to zoom the
+    // former, or it opens as a second tab and leaves the worktree's pane on the
+    // host shell — which is what "it opened in another terminal" looked like.
+    WTDC_TARGET_PANE: herdr.shellPaneOf(workspaceId),
   };
 
-  if (config.WTDC_ON_CREATE === 'never') return;
   if (config.WTDC_ON_CREATE === 'auto') {
-    herdr.openPluginPane('build', {
-      placement: 'tab', workspace: workspaceId || undefined, cwd: checkout,
-      env: { ...env, WTDC_MODE: 'provision' }, focus: true,
+    herdr.openPluginPane('boot', {
+      placement: 'zoomed', workspace: workspaceId || undefined, cwd: checkout,
+      env, focus: true, pane: env.WTDC_TARGET_PANE,
     });
   } else {
     herdr.openPluginPane('prompt', {
@@ -333,6 +348,51 @@ function actionTeardown() {
   teardown(checkout);
 }
 
+// ------------------------------------------------------------------ boot hand-off
+
+const sleepMs = (ms) => {
+  const shared = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(shared, 0, 0, ms);
+};
+
+/**
+ * Open the setup screen, once the prompt overlay is out of the way.
+ *
+ * Run detached by panes/prompt.mjs. The wait is the whole point: an overlay
+ * makes itself the active pane, and a pane opened with no target lands on the
+ * active one. Opening the boot screen before the prompt exits therefore stacks
+ * it on top of the question, and it disappears a moment later — which is what
+ * "I pressed yes and nothing happened" actually was.
+ */
+function bootLaunch(checkout, workspaceId, label, targetPane) {
+  if (!workspaceId) {
+    warn('no workspace for the new worktree; the setup screen will open wherever you are');
+  }
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const overlayUp = herdr.panesIn(workspaceId).some((p) => p.label === 'Dev container?');
+    if (!overlayUp) break;
+    sleepMs(100);
+  }
+
+  herdr.openPluginPane('boot', {
+    placement: 'zoomed',
+    workspace: workspaceId || undefined,
+    cwd: checkout,
+    // The worktree's own pane, captured by the hook before this plugin opened
+    // anything. Zooming it is what makes the setup screen take over the
+    // worktree instead of appearing in a tab of its own.
+    pane: targetPane || '',
+    env: {
+      WTDC_CHECKOUT: checkout,
+      WTDC_LABEL: label,
+      WTDC_WORKSPACE: workspaceId,
+      WTDC_TARGET_PANE: targetPane || '',
+    },
+  });
+}
+
 // ---------------------------------------------------------------------- entry
 
 function main() {
@@ -343,6 +403,11 @@ function main() {
     process.stdout.write('worktree-devcontainer: disabled inside a dev container\n');
     return;
   }
+
+  // Seed the user's config.env before dispatching, so a fresh install gets its
+  // editable copy from whichever command happens to run first. loadConfig()
+  // also seeds, but only the commands that need a setting ever reach it.
+  seedUserConfig();
 
   const [cmd, ...rest] = process.argv.slice(2);
 
@@ -359,6 +424,10 @@ function main() {
       return teardown(rest[0], rest[1] === '--force' || rest[1] === '1');
     }
     case 'status': return status();
+    case 'boot-launch': {
+      if (!rest[0]) die('worktree path required');
+      return bootLaunch(rest[0], rest[1] || '', rest[2] || '', rest[3] || '');
+    }
     case 'install-shell': return actionInstallShell();
     case 'help':
     case '-h':

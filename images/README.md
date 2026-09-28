@@ -81,9 +81,10 @@ heavy. Toolchains that genuinely need a linker pull their own copy in
 
 - **plan** — reads `manifest.json` and emits the build matrix. A broken manifest
   fails in seconds rather than after a base image has been through a full build.
-- **build** — matrix, one job per template, parallel. `base` has no dependency
-  so it is not blocked; the others pull `base` first. GHA layer cache keyed per
-  template, so a change to one does not invalidate the others.
+- **build-base** and **build** — `base` builds first and publishes on its own,
+  because every other template is `FROM` it. **build** is then a matrix over
+  the derived templates in parallel, each pulling `base` first. GHA layer cache
+  is keyed per template, so a change to one does not invalidate the others.
 - **verify** — after a successful push, runs `herdr --version` inside every
   published image, so a broken tag fails the workflow instead of failing
   someone's first provision.
@@ -97,5 +98,5 @@ Usually pointless — that is the point of CI. When iterating on a Dockerfile:
 
 ```sh
 docker build -t wtdc-base:local images/base
-WTDC_IMAGE=wtdc-base:local bin/wtdc provision /path/to/worktree
+WTDC_IMAGE=wtdc-base:local bin/wtdc.mjs provision /path/to/worktree
 ```

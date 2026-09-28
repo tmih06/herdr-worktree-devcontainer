@@ -9,10 +9,10 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { loadConfig } from './../lib/wtdc/config.mjs';
 import { findConfig } from './../lib/wtdc/devcontainer.mjs';
-import { herdr } from './../lib/wtdc/herdr.mjs';
+import { herdr, openPluginPane } from './../lib/wtdc/herdr.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, '..');
@@ -25,6 +25,8 @@ const checkout = process.env.WTDC_CHECKOUT || '';
 const workspaceId = process.env.WTDC_WORKSPACE || '';
 const label = process.env.WTDC_LABEL || '';
 const repo = process.env.WTDC_REPO || '';
+// The worktree's own pane, identified by the hook before this overlay existed.
+const targetPane = process.env.WTDC_TARGET_PANE || '';
 
 if (!checkout) {
   process.stdout.write('dev container: no worktree path in the invocation context\n');
@@ -132,22 +134,21 @@ if (!accepted) process.exit(0);
 
 process.stdout.write(`starting dev container for ${label}\n\n`);
 
-// Hand the slow work to the build pane, opened as a tab in this same workspace
-// so the image build streams where the user can watch it.
+// The boot pane cannot be opened from in here. A pane opened with no target
+// lands on the *active* pane, and right now that is this overlay — so the setup
+// screen would be stacked on the question and then die with it. That is exactly
+// what "I pressed yes and nothing happened" was: the boot pane opened, and the
+// prompt exiting took it down.
+//
+// So hand off to a detached process and exit. It waits for this overlay to
+// disappear, then focuses the worktree's workspace and opens the boot pane on
+// the real pane underneath.
 const bin = path.join(pluginRoot, 'bin', 'wtdc.mjs');
-herdr([
-  'plugin', 'pane', 'open',
-  '--plugin', process.env.HERDR_PLUGIN_ID || 'worktree-devcontainer',
-  '--entrypoint', 'build',
-  '--placement', 'tab',
-  '--cwd', checkout,
-  '--env', 'WTDC_MODE=provision',
-  '--env', `WTDC_CHECKOUT=${checkout}`,
-  '--env', `WTDC_LABEL=${label}`,
-  '--env', `WTDC_WORKSPACE=${workspaceId}`,
-  ...(workspaceId ? ['--workspace', workspaceId] : []),
-  '--focus',
-]);
+const launcher = spawn(
+  process.execPath,
+  [bin, 'boot-launch', checkout, workspaceId, label, targetPane],
+  { detached: true, stdio: 'ignore' },
+);
+launcher.unref();
 
-await sleep(50);
 process.exit(0);

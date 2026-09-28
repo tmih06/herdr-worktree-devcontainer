@@ -49,9 +49,10 @@ Then `herdr server reload-config`. The plugin never edits your config itself.
 
 Create a worktree the way you normally do (`prefix+shift+g`, or
 `herdr worktree create`). If the checkout has a devcontainer config, an overlay
-asks whether to build it. Answer yes and a tab streams `devcontainer up`; the
-plugin notifies you with a sound when it finishes, and a different one if it
-fails.
+asks whether to build it. Answer yes and a setup screen opens zoomed over that
+worktree's pane, with a progress bar through each stage. It holds the keyboard
+until the container is ready, and `Esc` cancels. The plugin notifies you with a
+sound when it finishes, and a different one if it fails.
 
 Afterwards, **every** terminal, split, tab, and agent you open in that worktree
 runs inside its container. Split panes, layouts, and agent lifecycle all behave
@@ -136,7 +137,7 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label |
 | `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
 | `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
-| `WTDC_TEMPLATE` / `WTDC_IMAGE` | | run a prebuilt image instead of building one |
+| `WTDC_TEMPLATE` / `WTDC_IMAGE` | `base` | run a prebuilt image instead of building one |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
 authoritative; the plugin injects nothing but a readiness marker. Object-form
@@ -154,8 +155,11 @@ what the plugin used to inject, so `up` is just `docker run`:
 | Building a per-worktree image | ~25s warm, minutes cold |
 | Prebuilt image | ~4s |
 
-`WTDC_TEMPLATE=node` uses one. This costs you the features in your own config;
-the plugin warns and names them rather than dropping them silently.
+`WTDC_TEMPLATE` defaults to `base`, so a new install is already on the fast
+path. Use `node`, `python`, or `rust` for a toolchain. This costs you the
+features in your own config; the plugin warns and names them rather than
+dropping them silently. Blank `WTDC_TEMPLATE` to go back to letting the CLI
+build from your config's features.
 
 ## State and cleanup
 
@@ -173,12 +177,19 @@ is still cleaned up.
 bin/wtdc.mjs          CLI: hooks, actions, provision, teardown, status
 lib/wtdc/shell.mjs    the dispatcher installed as terminal.default_shell
 lib/wtdc/devcontainer.mjs  config discovery, merge, container lifecycle
-lib/wtdc/{state,config,herdr,ui,run,jsonc,context}.mjs
-panes/{prompt,build,container}.mjs
+lib/wtdc/{state,config,herdr,ui,run,jsonc,context,progress}.mjs
+panes/{prompt,boot,build,container}.mjs
 ```
 
 The plugin is plain ESM JavaScript with no build step, so `herdr plugin link`
 works on a checkout with nothing to compile.
+
+Editing `herdr-plugin.toml` — adding a pane, changing a command — needs
+`herdr server reload-config` before it takes effect. Until then Herdr still
+accepts `plugin pane open` for the new entrypoint, returns a pane id, and then
+runs nothing, because it has the old command table. The pane appears and
+vanishes with no output, which looks like the plugin refusing to start rather
+than a stale manifest.
 
 ## Tests
 

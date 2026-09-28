@@ -1,17 +1,19 @@
 {
   // Dev container for developing the worktree-devcontainer plugin itself.
   //
-  // Deliberately minimal: it is the fixture the plugin's tests run against, so
-  // everything the plugin is supposed to add (the sshd feature, the published
-  // SSH port, the herdr install, the authorized_keys entry) is left out and
-  // gets injected into the merged copy at provision time.
+  // Deliberately minimal: it is the fixture the plugin's tests provision
+  // against. The plugin injects nothing here beyond the readiness marker it
+  // appends to postCreateCommand, so this file is also the proof that a user's
+  // own config stays authoritative — no features, ports, or users are added on
+  // top of it.
   "name": "herdr-worktree-devcontainer",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
 
   "features": {
-    // What the plugin adds, for reference. Do not add it here: the plugin
-    // injects it, and duplicating it would make the fixture unrepresentative.
-    // "ghcr.io/devcontainers/features/sshd:1": {}
+    // Declared on purpose. Any feature here makes the devcontainer CLI derive a
+    // per-workspace image instead of just running one, so keeping this in the
+    // fixture is what exercises the build-per-worktree path that WTDC_TEMPLATE
+    // exists to avoid.
     "ghcr.io/devcontainers/features/node:1": {}
   },
 

@@ -59,6 +59,14 @@ title = "Dev container"
 placement = "tab"
 command = ["node", "panes/build.mjs"]
 
+# The blocking setup screen: zoomed over the worktree's pane, with a progress
+# bar, and it holds the keyboard until the container is ready or it fails.
+[[panes]]
+id = "boot"
+title = "Setting up dev container"
+placement = "zoomed"
+command = ["node", "panes/boot.mjs"]
+
 # The one-shot container terminal opened right after a successful build.
 [[panes]]
 id = "container"

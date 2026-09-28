@@ -8,7 +8,7 @@
     {
       "name": "base",
       "dir": "images/base",
-      "description": "Ubuntu with sshd, herdr and common CLI tools. The foundation for the others."
+      "description": "Ubuntu with herdr and common CLI tools. The foundation for the others."
     },
     {
       "name": "node",

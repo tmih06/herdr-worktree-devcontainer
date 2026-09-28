@@ -63,6 +63,14 @@ fs.mkdirSync(path.join(WT_BROKEN, '.devcontainer'), { recursive: true });
 fs.writeFileSync(path.join(WT_BROKEN, '.devcontainer', 'devcontainer.json'),
   '{ "image": "debian:12", "postCreateCommand": {"x":"y"} }');
 
+// A valid, never-provisioned worktree, for the paths that must be reached
+// before any state exists. WT itself is provisioned by an earlier test, and
+// hook_created short-circuits on state, so it cannot be reused here.
+const WT_FRESH = path.join(sandbox, 'worktrees', 'fresh');
+fs.mkdirSync(path.join(WT_FRESH, '.devcontainer'), { recursive: true });
+fs.writeFileSync(path.join(WT_FRESH, '.devcontainer', 'devcontainer.json'),
+  '{ "image": "debian:12", "postCreateCommand": "echo ok" }');
+
 const record = (tool) => (...args) => {
   fs.appendFileSync(path.join(CALLS, tool), `${args.join(' ')}\n`);
 };
@@ -109,6 +117,13 @@ if [ "$a1 $a2" = "worktree list" ]; then
 fi
 if [ "$a1 $a2" = "workspace list" ]; then
   echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"demo"}]}}'
+  exit 0
+fi
+# pane list backs the workspace -> pane id lookup that zoomed/split panes need.
+if [ "$a1 $a2" = "pane list" ]; then
+  echo '{"result":{"panes":[
+    {"pane_id":"w9:p1","workspace_id":"w9","focused":true},
+    {"pane_id":"w11:p1","workspace_id":"w11","focused":true}]}}'
   exit 0
 fi
 exit 0
@@ -224,6 +239,63 @@ test('a failed provision leaves the worktree retryable', () => {
   assert.equal(state().entries[WT_BROKEN], undefined, 'no half-written entry may block a retry');
 });
 
+test('an overlay pane is never given a target Herdr would reject', () => {
+  // Herdr answers `overlay and popup plugin panes target the active pane` to any
+  // --workspace or --cwd, and openPluginPane used to send both. The command
+  // failed, nothing opened, and the hook still exited 0, so this was invisible.
+  reset();
+  wtdc(['hook-created'], {
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify({
+      data: {
+        worktree: { path: WT_FRESH, label: 'fresh' },
+        workspace: { workspace_id: 'w9', worktree: { repo_name: 'repo', checkout_path: WT_FRESH } },
+      },
+    }),
+  });
+
+  const recorded = calls('herdr');
+  assert.match(recorded, /pane open .*--entrypoint prompt --placement overlay/);
+  assert.doesNotMatch(recorded, /--workspace /, 'an overlay must not be sent --workspace');
+  assert.doesNotMatch(recorded, /--target-pane /, 'an overlay must not be sent --target-pane');
+  // The worktree still has to reach the pane, so it travels in the environment.
+  assert.match(recorded, /--env WTDC_CHECKOUT=/);
+  // An overlay lands on the focused pane, so the worktree's workspace is focused
+  // first. Without this the question is drawn over whatever the user was in.
+  assert.match(recorded, /workspace focus w9/);
+});
+
+test('the boot screen zooms the worktree pane, not a tab of its own', () => {
+  // Two failure modes this guards, both reported as "it opened in another
+  // terminal":
+  //   - untargeted, a zoomed pane opens as an extra tab and the worktree's own
+  //     pane stays on the host shell, so the worktree never lands in the
+  //     container;
+  //   - targeted at the prompt overlay, the pane stacks on the question and dies
+  //     with it, which reads as "I pressed yes and nothing happened".
+  // The pane id is captured by the hook before the plugin opens anything, so it
+  // is the worktree's shell and not one of ours.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p1']);
+
+  const recorded = calls('herdr');
+  assert.match(recorded, /pane open .*--entrypoint boot --placement zoomed/);
+  assert.match(recorded, /--target-pane w9:p1/, 'the worktree pane is zoomed');
+  assert.doesNotMatch(recorded, /--workspace /, '--workspace is rejected for a zoomed pane');
+  assert.match(recorded, /workspace focus w9/);
+  assert.match(recorded, /--env WTDC_TARGET_PANE=w9:p1/);
+});
+
+test('boot-launch waits for the prompt overlay to close before opening', () => {
+  // Opening the setup screen while the overlay is still up makes the overlay the
+  // active pane, so an untargeted pane lands on the question itself.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p1']);
+
+  const recorded = calls('herdr');
+  assert.match(recorded, /pane list/, 'the launcher looks at the panes first');
+  assert.doesNotMatch(recorded, /--workspace w9/);
+});
+
 test('hook-created offers the prompt only for a worktree with a devcontainer config', () => {
   const event = (checkout, workspace = 'w9', label = 'demo') => JSON.stringify({
     data: {
@@ -259,8 +331,15 @@ test('WTDC_ON_CREATE=auto skips the question', () => {
     }),
     WTDC_ON_CREATE: 'auto',
   });
-  assert.match(calls('herdr'), /--entrypoint build/);
+  // The setup screen, not a background tab: zoomed, over the worktree's own
+  // pane, which is what makes the worktree end up in the container rather than
+  // beside a tab that is.
+  assert.match(calls('herdr'), /--entrypoint boot --placement zoomed/);
+  assert.match(calls('herdr'), /--target-pane w11:p1/);
+  assert.match(calls('herdr'), /workspace focus w11/);
+  assert.doesNotMatch(calls('herdr'), /--workspace w11/);
   assert.doesNotMatch(calls('herdr'), /--entrypoint prompt/);
+  assert.doesNotMatch(calls('herdr'), /--entrypoint build/);
 });
 
 test('WTDC_ON_CREATE=never does nothing at all', () => {
