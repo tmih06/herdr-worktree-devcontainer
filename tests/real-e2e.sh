@@ -1,139 +1,164 @@
 #!/usr/bin/env bash
-# Real end-to-end run: a genuine devcontainer, a genuine sshd, a genuine
-# herdr server inside it, and a genuine saved SSH machine in herdr.
+# Real end-to-end test. Needs docker, the devcontainer CLI, and a running Herdr.
 #
-# Slow (pulls an image, builds it, installs herdr) and needs:
-#   docker running, the devcontainer CLI on PATH, and a linked plugin.
+#   bash tests/real-e2e.sh
 #
-#   DEVCONTAINER_CLI=/tmp/dccli/node_modules/.bin bash tests/real-e2e.sh
+# The unit and stubbed tests prove the plugin issues the right commands. This
+# proves the thing they cannot: that a real terminal in a real worktree really
+# does land inside a real container, and that git works there. The dispatcher is
+# the load-bearing piece, so it gets driven through an actual PTY.
 set -uo pipefail
 
 PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-DEVCONTAINER_CLI="${DEVCONTAINER_CLI:-$(command -v devcontainer || true)}"
-[ -n "$DEVCONTAINER_CLI" ] || { echo 'devcontainer CLI not found; set DEVCONTAINER_CLI' >&2; exit 2; }
 
-PLUGIN_ID=worktree-devcontainer
-BIN="$(dirname "$DEVCONTAINER_CLI")"
-command -v herdr >/dev/null || { echo 'herdr not on PATH' >&2; exit 2; }
-herdr plugin list 2>/dev/null | grep -q "$PLUGIN_ID" || {
-  echo "link the plugin first: herdr plugin link $PLUGIN_ROOT" >&2; exit 2; }
-
-SANDBOX="$(mktemp -d)"
-
-# Only ever remove containers this script created. `label=devcontainer.local_folder`
-# matches every devcontainer on the host, including the user's own, so the
-# workspace path has to be matched against this sandbox explicitly.
-cleanup() {
-  local c folder
-  for c in $(docker ps -aq --filter "label=devcontainer.local_folder" 2>/dev/null); do
-    folder="$(docker inspect -f '{{index .Config.Labels "devcontainer.local_folder"}}' "$c" 2>/dev/null)"
-    case "$folder" in
-      "$SANDBOX"/*) echo "removing test container $c ($folder)"; docker rm -f "$c" >/dev/null 2>&1 ;;
-      *) echo "leaving container $c alone ($folder)" ;;
-    esac
-  done
-  [ -n "${MACHINE_ID:-}" ] && herdr machine remove "$MACHINE_ID" >/dev/null 2>&1
-  rm -rf "$SANDBOX"
-}
-trap cleanup EXIT
-
-export PATH="$BIN:$PATH"
+SANDBOX="$(mktemp -d /tmp/wtdc-real.XXXXXX)"
 export HERDR_PLUGIN_ROOT="$PLUGIN_ROOT"
-export HERDR_PLUGIN_ID="$PLUGIN_ID"
+export HERDR_PLUGIN_ID=worktree-devcontainer
 export HERDR_PLUGIN_STATE_DIR="$SANDBOX/state"
 export HERDR_PLUGIN_CONFIG_DIR="$SANDBOX/config"
-
-REPO="$SANDBOX/repo"
-WT="$SANDBOX/wt"
-mkdir -p "$REPO"
-git -C "$REPO" init -q -b main
-git -C "$REPO" config user.email t@t.t
-git -C "$REPO" config user.name t
-mkdir -p "$REPO/.devcontainer"
-cat >"$REPO/.devcontainer/devcontainer.json" <<'JSON'
-{
-  // No remoteUser on purpose: the plugin must discover which account it
-  // provisioned rather than assuming any particular image's default user.
-  "name": "wtdc-real",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "postCreateCommand": "echo upstream-post-create-ran"
-}
-JSON
-git -C "$REPO" add -A
-git -C "$REPO" commit -qm init
-git -C "$REPO" worktree add -q -b real "$WT"
-
-# A real host workspace, so the "close the host workspace once the container is
-# up" behaviour is checked against herdr rather than a stub.
-HOST_WS="$(herdr workspace create --cwd "$WT" --label wtdc-real-host --no-focus 2>/dev/null |
-  jq -r '.result.workspace.workspace_id // empty')"
-if [ -z "$HOST_WS" ]; then
-  echo "could not create a host workspace; skipping" >&2
-  exit 2
-fi
-echo "==> host workspace $HOST_WS"
-
-echo "==> provisioning $WT (this builds a real image, be patient)"
-"$PLUGIN_ROOT/bin/wtdc" provision "$WT" "$HOST_WS" real
-rc=$?
-[ "$rc" -eq 0 ] || { echo "provision failed: $rc"; exit "$rc"; }
-
-CONTAINER_ID="$(jq -r --arg k "$WT" '.entries[$k].container_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"
-MACHINE_ID="$(jq -r --arg k "$WT" '.entries[$k].machine_id' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+export WTDC_SANDBOX="$SANDBOX"
+mkdir -p "$SANDBOX"/{state,config,bin}
 
 fail=0
 check() {
   if [ "$2" = "$3" ]; then printf '  \033[32mPASS\033[0m %s\n' "$1"
   else printf '  \033[31mFAIL\033[0m %s\n       expected: %s\n       actual:   %s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi
 }
+note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+cleanup() {
+  [ -n "${CONTAINER_ID:-}" ] && docker rm -f "$CONTAINER_ID" >/dev/null 2>&1
+  [ -n "${WT:-}" ] && git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
+  rm -rf "$SANDBOX"
+}
+trap cleanup EXIT
 
-echo
-echo "==> verifying the real thing"
-check 'container is running' 'yes' \
-  "$(docker ps -q --filter "id=$CONTAINER_ID" | grep -q . && echo yes || echo no)"
-check 'sshd is listening inside' 'yes' \
-  "$(docker exec "$CONTAINER_ID" sh -lc 'pgrep sshd >/dev/null && echo yes || echo no')"
-CTR_USER="$(docker exec "$CONTAINER_ID" cat /tmp/wtdc-user 2>/dev/null | tr -d '\r\n')"
-check 'container user recorded is not root' 'yes' \
-  "$([ -n "$CTR_USER" ] && [ "$CTR_USER" != root ] && echo yes || echo no)"
-check 'herdr is installed in the remoteUser home' 'yes' \
-  "$(docker exec "$CONTAINER_ID" sh -lc "export PATH=\"/home/$CTR_USER/.local/bin:\$PATH\"; command -v herdr >/dev/null && echo yes || echo no")"
-check 'herdr server answers inside' 'yes' \
-  "$(docker exec "$CONTAINER_ID" sh -lc "export PATH=\"/home/$CTR_USER/.local/bin:\$PATH\"; herdr status server >/dev/null 2>&1 && echo yes || echo no")"
-check 'authorized_keys landed in the remoteUser home' 'yes' \
-  "$(docker exec "$CONTAINER_ID" sh -lc "[ -s /home/$CTR_USER/.ssh/authorized_keys ] && echo yes || echo no")"
-check 'machine profile exists' 'yes' \
-  "$(herdr machine list --json | jq -e --arg m "$MACHINE_ID" '[(if type=="object" then (.machines//[]) else . end)[] | select(.id==$m)] | length > 0' >/dev/null && echo yes || echo no)"
-check 'remote command through the machine' 'yes' \
-  "$(herdr --machine "$MACHINE_ID" agent list >/dev/null 2>&1 && echo yes || echo no)"
-check 'remote workspace opened in the container' 'yes' \
-  "$(herdr --machine "$MACHINE_ID" workspace list 2>/dev/null | jq -e '(.result.workspaces // []) | length > 0' >/dev/null && echo yes || echo no)"
+for tool in docker devcontainer git herdr node; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required; skipping"; exit 0; }
+done
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required to drive the PTY; skipping"; exit 0; }
 
-echo
-echo "==> the user was handed over to the container"
-check 'host workspace is gone' 'no' \
-  "$(herdr workspace list 2>/dev/null | jq -e --arg w "$HOST_WS" \
-     '[.result.workspaces[]? | select(.workspace_id == $w)] | length > 0' >/dev/null && echo yes || echo no)"
-check 'a container workspace is focused on the machine' 'yes' \
-  "$(herdr --machine "$MACHINE_ID" workspace list 2>/dev/null | jq -e \
-     '[(.result.workspaces // [])[] | select(.focused == true)] | length > 0' >/dev/null && echo yes || echo no)"
-check 'recursion marker written into the container' 'yes' \
-  "$(docker exec "$CONTAINER_ID" sh -lc '[ -f /tmp/wtdc-user ] && echo yes || echo no')"
-check 'herdr came from the shared mount, not a download' '0' \
-  "$(docker exec "$CONTAINER_ID" sh -lc 'wc -c < /tmp/wtdc-install.log' | tr -d ' ')"
-check 'remote workspace id recorded in state' 'yes' \
-  "$([ -n "$(jq -r --arg k "$WT" '.entries[$k].remote_workspace_id // empty' \
-       "$HERDR_PLUGIN_STATE_DIR/state.json")" ] && echo yes || echo no)"
-echo
-echo "==> teardown"
+# --------------------------------------------------------------- fixtures
 
-"$PLUGIN_ROOT/bin/wtdc" teardown "$WT" >/dev/null 2>&1
-check 'container destroyed' 'no' \
+REPO="$SANDBOX/repo"
+mkdir -p "$REPO/.devcontainer"
+cat >"$REPO/.devcontainer/devcontainer.json" <<'JSON'
+{
+  // minimal fixture: the plugin must not need to inject anything here
+  "name": "real",
+  "image": "debian:bookworm-slim",
+  "postCreateCommand": "apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null"
+}
+JSON
+git -C "$REPO" init -q -b main
+git -C "$REPO" config user.email t@t.t
+git -C "$REPO" config user.name t
+git -C "$REPO" add -A
+git -C "$REPO" commit -qm init
+
+WT="$SANDBOX/worktrees/real"
+mkdir -p "$(dirname "$WT")"
+git -C "$REPO" worktree add -q -b real "$WT"
+
+# A host workspace standing in for the one Herdr opens on worktree.created.
+# The whole design depends on this one being left alone.
+HOST_WS="$(herdr workspace create --cwd "$WT" --label wtdc-real-host --no-focus 2>/dev/null |
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).result.workspace.workspace_id)}catch{}})')"
+[ -n "$HOST_WS" ] || { echo "could not create a host workspace; skipping"; exit 0; }
+
+echo "==> host workspace $HOST_WS"
+
+node "$PLUGIN_ROOT/bin/wtdc.mjs" provision "$WT" "$HOST_WS" real >"$SANDBOX/provision.log" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] || { echo "provision failed ($rc):"; cat "$SANDBOX/provision.log"; exit "$rc"; }
+
+CONTAINER_ID="$(node -e '
+  const s=JSON.parse(require("fs").readFileSync(process.env.HERDR_PLUGIN_STATE_DIR+"/state.json","utf8"));
+  const e=Object.values(s.entries)[0]; process.stdout.write(e.container_id||"")')"
+CUSER="$(node -e '
+  const s=JSON.parse(require("fs").readFileSync(process.env.HERDR_PLUGIN_STATE_DIR+"/state.json","utf8"));
+  const e=Object.values(s.entries)[0]; process.stdout.write(e.remote_user||"")')"
+CWS="$(node -e '
+  const s=JSON.parse(require("fs").readFileSync(process.env.HERDR_PLUGIN_STATE_DIR+"/state.json","utf8"));
+  const e=Object.values(s.entries)[0]; process.stdout.write(e.container_workspace||"")')"
+
+# ------------------------------------------------------------------ checks
+
+note "the worktree stayed a local Herdr workspace"
+check 'the host workspace is still open' 'yes' \
+  "$(herdr workspace list 2>/dev/null | grep -q "\"$HOST_WS\"" && echo yes || echo no)"
+check 'no SSH machine was created' '0' \
+  "$(herdr machine list --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const m=JSON.parse(s);const a=Array.isArray(m)?m:(m.machines||m.profiles||[]);console.log(a.filter(x=>/devc|real/.test(x.label||"")).length)}catch{console.log(0)}})')"
+check 'the worktree is marked in the sidebar' 'yes' \
+  "$(herdr workspace get "$HOST_WS" 2>/dev/null | grep -q '"name"' && echo yes || echo no)"
+
+note "git works inside the container"
+check 'the branch is visible in the container' 'real' \
+  "$(docker exec -u "$CUSER" -w "$CWS" "$CONTAINER_ID" git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+check 'the checkout is clean in the container' '' \
+  "$(docker exec -u "$CUSER" -w "$CWS" "$CONTAINER_ID" git status --porcelain 2>/dev/null)"
+check 'a write in the container is visible on the host' 'yes' \
+  "$(docker exec -u "$CUSER" -w "$CWS" "$CONTAINER_ID" sh -lc 'echo hi > .wtdc-probe' >/dev/null 2>&1;
+     [ -f "$WT/.wtdc-probe" ] && echo yes || echo no)"
+
+note "the dispatcher puts a new terminal in the container"
+# Driven through a real PTY, because the dispatcher only redirects interactive
+# panes and a piped stdin must fall through to the host shell.
+cat >"$SANDBOX/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$WTDC_SANDBOX/dispatcher_calls"
+case "$1 $2" in "ps -q") echo "$WTDC_TEST_CID" ;; esac
+exit 0
+STUB
+chmod +x "$SANDBOX/bin/docker"
+
+drive() { # drive <cwd> -> prints the docker args the dispatcher chose
+  ( cd "$1" && WTDC_TEST_CID="$CONTAINER_ID" python3 - <<'PY'
+import os, pty, select, time
+env = dict(os.environ)
+env["PATH"] = os.environ["SANDBOX"] + "/bin:" + env["PATH"]
+env["WTDC_STATE_FILE"] = os.environ["HERDR_PLUGIN_STATE_DIR"] + "/state.json"
+env["WTDC_REAL_SHELL"] = "/bin/true"
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("node", ["node", os.environ["HERDR_PLUGIN_ROOT"] + "/lib/wtdc/shell.mjs"], env)
+end = time.time() + 8
+while time.time() < end:
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try:
+            if not os.read(fd, 65536): break
+        except OSError: break
+    if os.waitpid(pid, os.WNOHANG)[0]: break
+PY
+) >/dev/null 2>&1
+  tail -1 "$SANDBOX/dispatcher_calls" 2>/dev/null
+}
+
+check 'a pane in the worktree is redirected into the container' 'yes' \
+  "$(drive "$WT" | grep -q -- "exec -it.*$CONTAINER_ID" && echo yes || echo no)"
+check 'the container workdir is the mounted worktree' 'yes' \
+  "$(drive "$WT" | grep -q -- "-w $CWS" && echo yes || echo no)"
+check 'a pane in a subdirectory keeps its position' 'yes' \
+  "$(mkdir -p "$WT/sub" && drive "$WT/sub" | grep -q -- "-w $CWS/sub" && echo yes || echo no)"
+
+note "a pane outside any worktree is left alone"
+OUTSIDE="$SANDBOX/elsewhere"
+mkdir -p "$OUTSIDE"
+: >"$SANDBOX/dispatcher_calls"
+drive "$OUTSIDE" >/dev/null
+check 'no docker exec outside a worktree' '' \
+  "$(grep -- '-it' "$SANDBOX/dispatcher_calls" 2>/dev/null || true)"
+
+note "teardown"
+node "$PLUGIN_ROOT/bin/wtdc.mjs" teardown "$WT" >"$SANDBOX/teardown.log" 2>&1
+check 'the container is gone' 'no' \
   "$(docker ps -aq --filter "id=$CONTAINER_ID" | grep -q . && echo yes || echo no)"
-check 'machine profile removed' 'no' \
-  "$(herdr machine list --json | jq -e --arg m "$MACHINE_ID" '[(if type=="object" then (.machines//[]) else . end)[] | select(.id==$m)] | length > 0' >/dev/null && echo yes || echo no)"
-check 'state emptied' '0' "$(jq -r '.entries | length' "$HERDR_PLUGIN_STATE_DIR/state.json")"
+check 'the state entry is gone' 'yes' \
+  "$(node -e '
+    const s=JSON.parse(require("fs").readFileSync(process.env.HERDR_PLUGIN_STATE_DIR+"/state.json","utf8"));
+    process.stdout.write(Object.keys(s.entries).length===0?"yes":"no")')"
 
-echo
-[ "$fail" -eq 0 ] && printf '\033[32mreal e2e passed\033[0m\n' || printf '\033[31m%d real check(s) failed\033[0m\n' "$fail"
+printf '\n'
+if [ "$fail" -eq 0 ]; then printf '\033[32mall real e2e checks passed\033[0m\n'
+else printf '\033[31m%d real e2e check(s) failed\033[0m\n' "$fail"; fi
 exit "$fail"

@@ -5,12 +5,11 @@ makes the Dev Container CLI derive a **per-workspace** image, so every new
 worktree pays for an image build — roughly 25s even with every Docker layer
 cached.
 
-An image with **no features** is just `docker run`. So these images bake in
-everything the plugin used to inject at provision time:
+An image with **no features** is just `docker run`. So these images carry
+what a container needs to be pleasant to work in, without a build step:
 
-- `openssh-server`, key-only, host keys generated at build time
 - `herdr`, so nothing is downloaded per container
-- a `dev` user owning `/workspaces` (not tied to any editor)
+- a `dev` user at uid 1000 owning `/workspaces` (not tied to any editor)
 
 With one of these, the generated config has no `features`, the CLI builds
 nothing, and a provision is a `docker run` plus a container start.
@@ -39,7 +38,7 @@ template pays the pull and every one after that does not.
 
 | Template | Adds |
 |---|---|
-| `base` | Ubuntu 24.04, sshd, herdr, git, curl, jq, ripgrep, less, sudo |
+| `base` | Ubuntu 24.04, herdr, git, curl, jq, ripgrep, less, sudo |
 | `node` | Node 24 LTS, corepack |
 | `python` | CPython 3, `uv` |
 | `rust` | rustup stable, `build-essential`, `pkg-config`, `libssl-dev` |

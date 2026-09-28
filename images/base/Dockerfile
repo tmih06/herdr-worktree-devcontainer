@@ -7,13 +7,12 @@
 # carries no features at all.
 #
 # Baked in:
-#   - openssh-server, preconfigured for key-only auth, host keys generated at
-#     build time so the first connection does not pay for ssh-keygen
-#   - herdr, so postCreateCommand does not download 26MB per container
+#   - herdr, so a container that wants to run agents does not download 26MB
 #
 # Deliberately slim: no compiler, no language runtimes, no editors. Those live
 # in the sibling templates so a base pull stays small. `build-essential` alone
-# was ~250MB, which is most of why this used to be a heavy image.
+# was ~250MB, which is most of why this used to be a heavy image. Nothing here
+# listens on a port: the plugin enters the container with `docker exec`.
 
 FROM ubuntu:24.04
 
@@ -28,7 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       jq \
       less \
-      openssh-server \
       ripgrep \
       sudo \
       tzdata \
@@ -80,35 +78,15 @@ RUN set -eux; \
 LABEL devcontainer.remote.user="${USER_NAME}" \
       devcontainer.remote.uid="1000"
 
-# sshd: key-only, root allowed, host keys generated now rather than on boot.
+# No sshd and no Herdr server are baked in. The plugin reaches the container
+# with `docker exec` through the shell dispatcher, so there is no SSH endpoint
+# to publish and no in-container Herdr to install. What this image still has to
+# get right is the uid: the CLI's updateUID script refuses to remap when another
+# user already holds the target uid, which is what left the bind-mounted
+# worktree unwritable. That is handled above.
 #
-# Port 2222, not the default 22. The plugin publishes WTDC_SSH_PORT (2222) and
-# the devcontainers sshd feature also uses 2222; an image listening on 22
-# answers nothing and the provision just times out waiting for it.
-ARG SSH_PORT=2222
-RUN mkdir -p /var/run/sshd /etc/ssh \
- && ssh-keygen -A \
- && printf '%s\n' \
-      "Port ${SSH_PORT}" \
-      'PermitRootLogin yes' \
-      'PasswordAuthentication no' \
-      'KbdInteractiveAuthentication no' \
-      'PubkeyAuthentication yes' \
-      'UsePAM yes' \
-      'X11Forwarding no' \
-      'AcceptEnv LANG LC_*' \
-      > /etc/ssh/sshd_config.d/10-herdr.conf \
- && sed -i "s/^#\\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
-
-COPY ssh-init.sh /usr/local/share/ssh-init.sh
-RUN chmod +x /usr/local/share/ssh-init.sh
-
-# herdr, baked in. The plugin bind mounts a host copy when it can and only
-# falls back to installing when this is absent.
-#
-# Installed as the workspace user via su, so the installer writes into that
-# user's home; running it as root would put the binary in /root and the copy
-# below would find nothing.
+# herdr, however, is still needed *inside* the container for the user to run
+# agents there, so it is installed plainly and without the sshd plumbing.
 RUN set -eux; \
     curl -fsSL https://herdr.dev/install.sh -o /tmp/herdr-install.sh; \
     chmod +x /tmp/herdr-install.sh; \
@@ -121,7 +99,5 @@ RUN set -eux; \
 
 USER ${USER_NAME}
 WORKDIR /workspaces
-EXPOSE 2222
 
-ENTRYPOINT ["/usr/local/share/ssh-init.sh"]
 CMD ["sleep", "infinity"]

@@ -1,58 +1,67 @@
 id = "worktree-devcontainer"
 name = "Worktree Dev Container"
-version = "0.1.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
-description = "Spin up a dev container for new Herdr worktrees and attach to it as a saved SSH machine"
+description = "Run each Herdr worktree's devcontainer and open terminals inside it, keeping the worktree grouped under its repo"
 platforms = ["linux", "macos"]
 
 # Fires after Herdr has already created the worktree and opened its workspace.
 # The plugin asks, in its own overlay, whether this worktree should get a container.
 [[events]]
 on = "worktree.created"
-command = ["bash", "bin/wtdc", "hook-created"]
+command = ["node", "bin/wtdc.mjs", "hook-created"]
 
 # Fires after `herdr worktree remove` tore the checkout down.
 [[events]]
 on = "worktree.removed"
-command = ["bash", "bin/wtdc", "hook-removed"]
+command = ["node", "bin/wtdc.mjs", "hook-removed"]
 
 [[startup]]
-command = ["bash", "bin/wtdc", "startup"]
+command = ["node", "bin/wtdc.mjs", "startup"]
 
 [[actions]]
 id = "provision"
 title = "Dev container: create for this worktree"
 contexts = ["workspace"]
-command = ["bash", "bin/wtdc", "action", "provision"]
+command = ["node", "bin/wtdc.mjs", "action", "provision"]
 
 [[actions]]
 id = "status"
 title = "Dev container: status"
 contexts = ["global", "workspace"]
-command = ["bash", "bin/wtdc", "action", "status"]
-
-[[actions]]
-id = "prune"
-title = "Dev container: forget dead machines"
-contexts = ["global", "workspace"]
-command = ["bash", "bin/wtdc", "action", "prune"]
+command = ["node", "bin/wtdc.mjs", "action", "status"]
 
 [[actions]]
 id = "teardown"
 title = "Dev container: destroy for this worktree"
 contexts = ["workspace"]
-command = ["bash", "bin/wtdc", "action", "teardown"]
+command = ["node", "bin/wtdc.mjs", "action", "teardown"]
+
+# Prints the one config.toml line that points terminal.default_shell at the
+# dispatcher. It does not edit the config itself.
+[[actions]]
+id = "install-shell"
+title = "Dev container: install shell dispatcher"
+contexts = ["global", "workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "install-shell"]
 
 # The yes/no checkbox shown right after a worktree is created.
 [[panes]]
 id = "prompt"
 title = "Dev container?"
 placement = "overlay"
-command = ["bash", "panes/prompt.sh"]
+command = ["node", "panes/prompt.mjs"]
 
 # Streams `devcontainer up` / teardown output in a normal tab.
 [[panes]]
 id = "build"
 title = "Dev container"
 placement = "tab"
-command = ["bash", "panes/build.sh"]
+command = ["node", "panes/build.mjs"]
+
+# The one-shot container terminal opened right after a successful build.
+[[panes]]
+id = "container"
+title = "Dev container shell"
+placement = "tab"
+command = ["node", "panes/container.mjs"]

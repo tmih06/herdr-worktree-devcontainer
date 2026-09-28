@@ -1,295 +1,193 @@
-# worktree-devcontainer
+# Worktree Dev Container
 
-A Herdr plugin that gives every new worktree a dev container, and connects that
-container to your host Herdr as a saved SSH machine.
+`worktree-devcontainer` runs each Herdr Git worktree's own
+`.devcontainer/devcontainer.json` and makes every terminal in that worktree
+open inside the resulting container.
 
-When you create a worktree in Herdr, this plugin notices, asks whether you want
-a container, and if you say yes it will:
-
-1. build and start a dev container from **your repo's own** `.devcontainer` config,
-2. install `sshd` and `herdr` inside it,
-3. publish the SSH port back to your host,
-4. register the container in Herdr as a saved machine.
-
-The worktree then appears in the sidebar as its own machine. Switch to it and
-you are inside the container, running a container-side Herdr server, with your
-agents and panes intact. Remove the worktree and the container goes with it.
+The worktree stays what Herdr already made it: a normal worktree, grouped under
+its repository, with its branch and Git provenance intact. There is no extra
+machine in the sidebar and no second Herdr session. What changes is where the
+shells run.
 
 ## Requirements
 
-| Tool | Why | Install |
-|---|---|---|
-| `docker` | runs the container | your package manager |
-| `devcontainer` | the Dev Container CLI | `npm i -g @devcontainers/cli` |
-| `jq`, `ssh`, `ssh-keygen`, `node`, `timeout` | config merge, SSH auth, JSONC parsing | `jq` `openssh` `nodejs` `coreutils` |
+| Tool | Why |
+|---|---|
+| Herdr 0.9.0+ | the plugin API |
+| Docker | runs the container |
+| `devcontainer` | the Dev Container CLI (`npm i -g @devcontainers/cli`) |
+| `node` | runs the plugin |
+| `git` | worktree metadata |
 
-`node` is listed because the Dev Container CLI is an npm package, so it is
-already on your machine wherever `devcontainer` runs.
+`node` is not optional: the Dev Container CLI is an npm package, so it is
+already on any machine where `devcontainer` runs.
 
 ## Install
 
 ```sh
-herdr plugin link /path/to/this/repo
-herdr plugin list                     # confirm no warnings
-herdr plugin config-dir worktree-devcontainer
+herdr plugin link /path/to/this/repo     # or: herdr plugin install owner/repo
+herdr plugin enable worktree-devcontainer
 ```
 
-Then edit the config it printed:
+Then **install the shell dispatcher** — this is the step that makes terminals
+land in the container:
 
 ```sh
-$(herdr plugin config-dir worktree-devcontainer)/config.env
+herdr plugin action invoke worktree-devcontainer.install-shell
 ```
+
+It prints one line to add to `~/.config/herdr/config.toml`:
+
+```toml
+[terminal]
+default_shell = "/path/to/this/repo/lib/wtdc/shell.mjs"
+```
+
+Then `herdr server reload-config`. The plugin never edits your config itself.
 
 ## Use it
 
-Nothing to configure beyond your repo's `.devcontainer/devcontainer.json`.
-
 Create a worktree the way you normally do (`prefix+shift+g`, or
-`herdr worktree create`). As soon as it exists, an overlay asks:
+`herdr worktree create`). If the checkout has a devcontainer config, an overlay
+asks whether to build it. Answer yes and a tab streams `devcontainer up`; the
+plugin notifies you with a sound when it finishes, and a different one if it
+fails.
 
-```
-  Dev container
+Afterwards, **every** terminal, split, tab, and agent you open in that worktree
+runs inside its container. Split panes, layouts, and agent lifecycle all behave
+normally, because they are ordinary Herdr features — only the shell they spawn
+is different.
 
-  Worktree   feat-payments
-             /home/you/.herdr/worktrees/feat-payments
-  Config     .devcontainer/devcontainer.json
-  Repo       myrepo
-
-  [x] Create a dev container for this worktree
-
-  y/Enter yes    n/Esc/q no    space toggle
-```
-
-Answer yes and a new tab opens in that workspace and streams
-`devcontainer up`, so you watch the image build where you created the worktree.
-The build takes minutes, so the plugin raises a Herdr notification with a sound
-when it finishes — and a different one if it fails.
-
-### Where you end up
-
-When the container is ready the plugin hands you over:
-
-1. it creates a workspace **on the container's machine**, rooted at the
-   container's workspace folder,
-2. focuses it, so your view switches to the container,
-3. closes the host worktree workspace, because it would otherwise keep
-   spawning host shells and look like a valid place to work.
-
-From then on every terminal you open for that worktree runs inside the
-container. The host checkout is untouched on disk and still reachable from an
-editor or a plain shell; it just is not a Herdr workspace any more.
-
-Set `WTDC_CLOSE_HOST_WORKSPACE=0` to keep it, or `WTDC_FOCUS_REMOTE=0` to stay
-where you are and pick the container in the sidebar yourself.
-
-> Herdr cannot re-point a workspace's panes at a container. Panes always spawn
-> your `$SHELL`, and the only shell override in the config is
-> `terminal.default_shell`, which is global. That is why the container gets its
-> own workspace and the host one is closed, rather than the host workspace
-> being converted.
+Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
 ### Actions
 
-Also available from Herdr's action menu or `herdr plugin action invoke`:
-
 | Action | What it does |
 |---|---|
-| `worktree-devcontainer.provision` | build a container for the current worktree |
-| `worktree-devcontainer.status` | list tracked containers and whether they run |
-| `worktree-devcontainer.teardown` | destroy the current worktree's container |
+| `provision` | build a container for the current worktree |
+| `status` | list tracked worktrees and whether their containers run |
+| `teardown` | destroy the current worktree's container |
+| `install-shell` | print the `default_shell` line to add |
 
-### Keybinding (optional)
+## How it works
 
-```toml
-[[keys.command]]
-key = "prefix+shift+d"
-type = "plugin_action"
-command = "worktree-devcontainer.provision"
-description = "dev container for this worktree"
+Herdr spawns `terminal.default_shell` for each new pane. The plugin points
+that at a dispatcher which asks one question: *is this pane's working directory
+inside a worktree that has a container?* If yes, `docker exec` into it. If no,
+`exec` your real `$SHELL` — so the dispatcher is inert everywhere else.
+
 ```
+myrepo (main)
+  feat-payments          ← a normal Herdr worktree
+     pane 1  →  docker exec … bash
+     pane 2  →  docker exec … bash
+```
+
+Two things make this work rather than merely look like it works:
+
+**Agent detection still functions.** Herdr classifies agents from the pane's
+screen buffer, not the process tree, so an agent running inside `docker exec` is
+detected, named, and tracked normally. (One caveat: `herdr agent start` checks
+that the pane's *interactive shell* owns the foreground, and on the host that
+process is `docker`. Launching agents by typing them works; programmatic start
+may not.)
+
+**Git works inside the container.** A linked worktree stores its git metadata
+as a `.git` **file** pointing at `<main-repo>/.git/worktrees/<name>`, which lies
+outside the worktree. The Dev Container CLI mounts only the workspace folder, so
+that pointer dangles in the container and every `git` command fails. The plugin
+bind-mounts the main repository's `.git` at the identical host path. Verified:
+
+```
+worktree only     -> ls /main/.git/worktrees/<name>: No such file or directory
+worktree + .git   -> HEAD ORIG_HEAD commondir gitdir index logs
+```
+
+A main checkout is its own common directory, is already mounted as the
+workspace, and gets no extra mount.
+
+### Why not a saved SSH machine?
+
+An earlier version made each container a saved SSH machine, so it got a full
+Herdr session of its own. That works, but a machine is a separate Herdr server,
+so its workspaces render beneath a **machine node** in the sidebar — the
+worktree disappears from under its repository, which is the main thing you want
+a worktree for. It also required injecting an sshd feature, publishing a port,
+generating a keypair, and installing a Herdr server inside every container.
+
+The shell dispatcher gets the same isolation — a real filesystem, real
+processes, real package and port separation — with none of that, and without
+the worktree moving.
 
 ## Configuration
 
-All keys live in `config.env`. Precedence is **environment > config file >
-shipped default**, so anything can be overridden per-invocation:
-
-```sh
-WTDC_ON_CREATE=auto bash bin/wtdc hook-created
-```
+Herdr copies [`config/config.default.env`](config/config.default.env) to its
+plugin config directory on first use; edit that copy. Environment variables
+given when invoking `bin/wtdc.mjs` take precedence.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `WTDC_ENABLED` | `1` | master switch for hooks and actions |
 | `WTDC_ON_CREATE` | `prompt` | `prompt`, `auto`, or `never` |
-| `WTDC_SSH_FEATURE` | `ghcr.io/devcontainers/features/sshd:1` | feature providing sshd |
-| `WTDC_SSH_PORT` | `2222` | container port sshd listens on |
-| `WTDC_CONTAINER_INSTALL` | herdr install script | run in the container's `postCreateCommand` |
-| `WTDC_REMOTE_SESSION` | *(empty)* | named Herdr session inside the container |
-| `WTDC_OPEN_REMOTE_WORKSPACE` | `1` | open a workspace in the container after connecting |
-| `WTDC_FOCUS_REMOTE` | `1` | focus the container workspace when it is ready |
-| `WTDC_CLOSE_HOST_WORKSPACE` | `1` | close the host worktree workspace once the container is up |
 | `WTDC_NOTIFY` | `1` | notify when the build finishes or fails |
-| `WTDC_READY_TIMEOUT` | `180` | seconds to wait for sshd and the container herdr server |
-| `WTDC_BUILD_TIMEOUT` | `1800` | seconds to wait for `devcontainer up` |
+| `WTDC_BUILD_TIMEOUT` | `1800` | seconds to wait for the readiness marker |
 | `WTDC_KEEP_CONTAINER` | `0` | keep the container when the worktree is removed |
-| `WTDC_EXTRA_MOUNTS` | *(empty)* | extra `--mount` args, e.g. `type=bind,source=/a,target=/a` |
+| `WTDC_OPEN_CONTAINER_PANE` | `1` | open a container tab when the build finishes |
+| `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label |
+| `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
 | `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
-| `WTDC_MACHINE_LABEL_PREFIX` | `devc` | sidebar label prefix |
+| `WTDC_TEMPLATE` / `WTDC_IMAGE` | | run a prebuilt image instead of building one |
 
-## How it works, and why
+Your image, features, `remoteUser`, mounts, and lifecycle commands stay
+authoritative; the plugin injects nothing but a readiness marker. Object-form
+`postCreateCommand` is rejected rather than silently reshaped, because it cannot
+be appended to without changing its meaning.
 
-Three constraints drive the whole design. All three are properties of Herdr and
-the Dev Container CLI, not choices.
+### Prebuilt images
 
-**Herdr machines are SSH-only.** There is no docker transport. A container can
-only become a saved machine if it runs an SSH server, which is why the plugin
-injects the `sshd` devcontainer feature into your config. That feature listens
-on **2222**, not 22, which is why `WTDC_SSH_PORT` defaults to 2222.
-
-**`devcontainer up` ignores `forwardPorts`.** Forwarding is implemented by
-editor clients; the Dev Container CLI itself has no forwarding daemon. So the
-port is published with `runArgs: ["--publish", "127.0.0.1::2222"]`, which asks
-Docker for a free loopback port. The plugin reads the real port back with
-`docker port`. If your config uses `dockerComposeFile`, `runArgs` does not
-apply and the plugin says so instead of failing silently — publish the port in
-your compose file, or use `WTDC_EXTRA_MOUNTS`.
-
-**Background SSH never answers a prompt.** Herdr's machine connections do not
-ask for passwords, so the container gets a dedicated keypair instead. The
-plugin generates one keypair under its state dir, injects the public key into
-the container's `authorized_keys` via `postCreateCommand`, and writes a
-managed drop-in at `~/.ssh/config.d/herdr-worktree-devcontainer`. The host key
-is accepted on first contact and the known-hosts file is plugin-private, so
-your own `~/.ssh/known_hosts` is never touched.
-
-The same `postCreateCommand` also installs herdr inside the container and the
-plugin starts the container-side server itself. That is deliberate: when
-`herdr machine add` runs it finds a compatible binary and a running server, so
-it saves the profile without stopping to ask you to install or replace anything.
-Two details matter there:
-
-- The server is started with `setsid`. Herdr reports its
-  `detached_server_daemon` capability as `getsid(0) == getpid()`, so a server
-  left in the `docker exec` session is rejected with *"remote server is not
-  ready for saved machines"*.
-- Every container command runs as the provisioned `remoteUser`, not the image
-  user. Started as root, the server would leave root-owned state in the user's
-  home and the later SSH session would fail with `EACCES`.
-
-Installing herdr during image setup needs network access, and that step ends in
-`|| echo` so one flaky download cannot fail the whole build. If herdr turns out
-to be missing afterwards, the plugin retries the same install against the
-running container and, if that still fails, prints the installer log it kept at
-`/tmp/wtdc-install.log`.
-
-### Your config is never modified
-
-The merged config is written to the plugin's state directory, not next to your
-original. That is forced by the CLI, which refuses any `--config` file not
-literally named `devcontainer.json`. Because the copy lives elsewhere, every
-host-relative path in it (`build.context`, `build.dockerfile`, `extends`) is
-rewritten to an absolute path first so the build still resolves correctly.
-
-The upside is that your worktree stays completely clean — `git status` shows
-nothing after provisioning.
-
-`devcontainer.json` is JSONC and is parsed with a string-aware comment
-stripper rather than a regex, so `//` inside URLs survives.
-
-### What you see in the sidebar
-
-Each provisioned worktree becomes a machine labelled `devc-<slug>`, and a
-workspace is opened inside the container rooted at its remote workspace
-folder. Workspaces, panes and agents on that machine belong to the container's
-own Herdr server and survive your host Herdr restarting.
-
-## Speed
-
-Measured on a fresh worktree with the image already pulled, full provision
-including the saved machine:
+A config that declares any `features` makes the CLI derive a per-workspace
+image, so every new worktree pays a build. The templates in `images/` bake in
+what the plugin used to inject, so `up` is just `docker run`:
 
 | Setup | Time |
 |---|---|
-| Building a per-worktree image (sshd feature) | 1m25s |
-| Prebuilt image | **3.9s** |
+| Building a per-worktree image | ~25s warm, minutes cold |
+| Prebuilt image | ~4s |
 
-The difference is structural, not tuning. A `devcontainer.json` that declares
-any `features` makes the Dev Container CLI derive a **per-workspace image**, so
-every new worktree pays for a build. A config with no features is just
-`docker run`. The prebuilt templates bake in sshd and herdr so the generated
-config needs no features at all.
+`WTDC_TEMPLATE=node` uses one. This costs you the features in your own config;
+the plugin warns and names them rather than dropping them silently.
 
-Using one costs you the features in your own `devcontainer.json` — the plugin
-warns and names them rather than dropping them silently:
+## State and cleanup
+
+State lives at `$HERDR_PLUGIN_STATE_DIR/state.json`, keyed by absolute checkout
+path, and holds the container id, name, user, and container-side workspace path
+the dispatcher needs on every new pane. The merged config is removed with the
+entry. A failed build drops its partial entry so the worktree stays retryable,
+and the `worktree.removed` hook also sweeps containers by Docker's
+`devcontainer.local_folder` label, so a build that died before state was written
+is still cleaned up.
+
+## Layout
 
 ```
-warn: using prebuilt image ghcr.io/...-base:latest, so these features are not
-      applied: ghcr.io/devcontainers/features/node:1
+bin/wtdc.mjs          CLI: hooks, actions, provision, teardown, status
+lib/wtdc/shell.mjs    the dispatcher installed as terminal.default_shell
+lib/wtdc/devcontainer.mjs  config discovery, merge, container lifecycle
+lib/wtdc/{state,config,herdr,ui,run,jsonc,context}.mjs
+panes/{prompt,build,container}.mjs
 ```
 
-Two caveats on the number: the first provision of a template also pays the
-image pull, and `WTDC_TEMPLATE=node` is not the same as a feature-configured
-repo — pick the template that matches what your features were giving you.
-
-## Cleanup
-
-`herdr worktree remove` fires `worktree.removed`, which removes the saved
-machine profile, destroys the container, deletes the merged config, and rewrites
-the SSH drop-in. Everything is keyed off the worktree path in
-`$HERDR_PLUGIN_STATE_DIR/state.json`, so cleanup still works when the checkout
-is already gone.
-
-Set `WTDC_KEEP_CONTAINER=1` to keep the container and forget only the Herdr
-wiring.
-
-## Known limits
-
-- **`postCreateCommand` must be a string or an array of strings.** The Dev
-  Container CLI joins array items with a space and execs the result as one
-  command line, so an array is not a usable way to append work. The plugin
-  always emits a single string chained with `&&`, joining your existing array
-  with `&&` if you had one. The object form cannot be merged without changing
-  its meaning, so the plugin refuses it with an explanation rather than
-  guessing.
-- **Compose configs are rejected**, because `runArgs` cannot publish the SSH
-  port there. Use a compose file with an explicit `ports:` mapping for sshd.
-- **Git inside the container can be awkward.** A linked worktree's `.git` is a
-  file pointing at the main repo, which the container may not be able to reach.
-  If `git` misbehaves inside the container, mount the git common dir with
-  `WTDC_EXTRA_MOUNTS`.
-- **Docker Desktop (macOS/Windows)**: container IPs are not routable from the
-  host, so the published port is mandatory. Linux hosts also fall back to the
-  container's bridge IP when nothing is published.
+The plugin is plain ESM JavaScript with no build step, so `herdr plugin link`
+works on a checkout with nothing to compile.
 
 ## Tests
 
 ```sh
-bash bin/wtdc selftest     # pure logic: JSONC, merge, state, ssh projection
-bash tests/e2e.sh          # full provision/teardown/hooks vs stubbed host tools
-bash tests/prompt-keys.sh  # prompt overlay key handling, driven through a real pty
-bash tests/real-e2e.sh     # a real container, real sshd, real saved machine
+node --test tests/*.test.mjs   # unit + stubbed e2e + dispatcher
+bash tests/prompt-keys.sh      # the overlay, driven through a real PTY
+bash tests/real-e2e.sh         # needs docker, devcontainer, and a live Herdr
 ```
 
-`real-e2e.sh` needs docker, the Dev Container CLI, a linked plugin, and builds
-an image. Point it at a CLI that is not on `PATH`:
-
-```sh
-DEVCONTAINER_CLI=/path/to/devcontainer bash tests/real-e2e.sh
-```
-
-It only ever removes containers whose workspace lives under its own temp
-directory, so your own dev containers are left alone.
-
-To try the plugin by hand, this repo is its own fixture: it has a
-`.devcontainer/devcontainer.json` that deliberately omits everything the plugin
-injects. Create a Herdr worktree from it and the prompt overlay will appear.
-
-## Uninstall
-
-```sh
-herdr plugin unlink worktree-devcontainer
-rm -f ~/.ssh/config.d/herdr-worktree-devcontainer
-```
-
-Remove the `Include ~/.ssh/config.d/*` line from `~/.ssh/config` by hand if
-nothing else uses it.
+`tests/real-e2e.sh` is the one that proves the design: it provisions a real
+container and then drives the dispatcher through an actual PTY to confirm a new
+terminal lands inside it. It skips with a reason when its tools are missing.

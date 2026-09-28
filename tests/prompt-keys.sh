@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive panes/prompt.sh through a real PTY and assert how it reacts to keys.
+# Drive panes/prompt.mjs through a real PTY and assert how it reacts to keys.
 #
 # The bug this exists for: an arrow key sends ESC [ B. Reading a single byte
 # left a bare ESC, which the handler treated as "Esc = decline" and the prompt
@@ -51,7 +51,7 @@ env.update({
 
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvpe("bash", ["bash", PLUGIN_ROOT + "/panes/prompt.sh"], env)
+    os.execvpe("node", ["node", PLUGIN_ROOT + "/panes/prompt.mjs"], env)
 
 buf = b""
 def pump(sec):
