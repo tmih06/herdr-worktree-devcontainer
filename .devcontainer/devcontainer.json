@@ -14,14 +14,18 @@
 
   "remoteUser": "dev",
 
-  // Borrow host tools as individual read-only files. Use localEnv for host paths;
-  // Docker does not expand a literal ~ in a mount source.
+  // Borrow host tools as read-only mounts. Codex needs its companion executable
+  // and resources beside the main binary, so mount its whole installed package.
+  // Use localEnv for host paths; Docker does not expand a literal ~ in a source.
   "mounts": [
     // "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly"
     "type=bind,source=${localEnv:HOME}/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly",
-    "type=bind,source=${localEnv:HOME}/.local/bin/codex,target=/usr/local/bin/codex,readonly"
+    "type=bind,source=${localEnv:HOME}/.codex/packages/standalone/current,target=/opt/codex,readonly",
+    "type=bind,source=${localEnv:HOME}/.codex/auth.json,target=/home/dev/.codex/auth.json,readonly"
   ],
 
+  // Docker creates the parent of the auth-file mount as root when it is absent
+  // from the image. Codex needs this directory writable for its SQLite state.
   // The plugin waits for this command through the Dev Container CLI's waitFor setting.
-  "postCreateCommand": "echo 'worktree-devcontainer dev container ready'"
+  "postCreateCommand": "sudo chown dev:dev /home/dev/.codex && sudo chmod 700 /home/dev/.codex && sudo ln -sf /opt/codex/bin/codex /usr/local/bin/codex && echo 'worktree-devcontainer dev container ready'"
 }
