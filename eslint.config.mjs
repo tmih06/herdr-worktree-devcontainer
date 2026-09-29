@@ -10,28 +10,28 @@
 // than suppressing it per line, because the alternative is an eslint-disable on
 // every regex that does the only job it has.
 
-import js from '@eslint/js';
-import globals from 'globals';
+import js from "@eslint/js";
+import globals from "globals";
 
 export default [
   {
-    ignores: ['node_modules/**', 'coverage/**'],
+    ignores: ["node_modules/**", "coverage/**"],
   },
   js.configs.recommended,
   {
-    files: ['**/*.mjs'],
+    files: ["**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2024,
-      sourceType: 'module',
+      sourceType: "module",
       globals: {
         ...globals.node,
       },
     },
     rules: {
-      'no-control-regex': 'off',
+      "no-control-regex": "off",
       // `_name` is this codebase's way of saying "deliberately unused" — a
       // destructured field kept for shape, a CLI flag accepted and ignored.
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      "no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },
 ];

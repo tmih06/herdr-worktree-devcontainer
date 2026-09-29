@@ -14,26 +14,37 @@
 //
 // See README.md for configuration.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { ROOT, insideContainer } from './../lib/wtdc/context.mjs';
-import { loadConfig, seedUserConfig } from './../lib/wtdc/config.mjs';
-import { tryRun, have } from './../lib/wtdc/run.mjs';
-import { step, ok, info, detail, warn, die, notify } from './../lib/wtdc/ui.mjs';
-import { setTomlKey } from './../lib/wtdc/toml.mjs';
-import { emit, phaseStart } from './../lib/wtdc/progress.mjs';
-import * as state from './../lib/wtdc/state.mjs';
-import * as dc from './../lib/wtdc/devcontainer.mjs';
-import * as herdr from './../lib/wtdc/herdr.mjs';
-import * as imageInfo from './../lib/wtdc/imageInfo.mjs';
+import fs from "node:fs";
+import path from "node:path";
+import { ROOT, insideContainer } from "./../lib/wtdc/context.mjs";
+import { loadConfig, seedUserConfig } from "./../lib/wtdc/config.mjs";
+import { tryRun, have } from "./../lib/wtdc/run.mjs";
+import { step, ok, info, detail, warn, die, notify } from "./../lib/wtdc/ui.mjs";
+import { setTomlKey } from "./../lib/wtdc/toml.mjs";
+import { emit, phaseStart } from "./../lib/wtdc/progress.mjs";
+import * as state from "./../lib/wtdc/state.mjs";
+import * as dc from "./../lib/wtdc/devcontainer.mjs";
+import * as herdr from "./../lib/wtdc/herdr.mjs";
+import * as imageInfo from "./../lib/wtdc/imageInfo.mjs";
 
-const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+const slugify = (s) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
 
 /** Repository name, used to keep machine/container names unique across repos. */
 function projectFor(checkout) {
-  const res = tryRun('git', ['-C', checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
-  const gd = (res.stdout || '').trim();
-  return gd ? path.basename(path.dirname(gd)) : '';
+  const res = tryRun("git", [
+    "-C",
+    checkout,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]);
+  const gd = (res.stdout || "").trim();
+  return gd ? path.basename(path.dirname(gd)) : "";
 }
 
 /** Disambiguate a slug that another worktree already claimed. */
@@ -51,17 +62,17 @@ function spawnlessChecksum(text) {
     h ^= text.charCodeAt(i);
     h = Math.imul(h, 0x01000193) >>> 0;
   }
-  return h.toString(16).padStart(8, '0');
+  return h.toString(16).padStart(8, "0");
 }
 
 function containerNameFor(slug, project) {
-  const parts = [project || 'wt', slug].filter(Boolean);
-  return `herdr-${parts.join('-')}`.slice(0, 63);
+  const parts = [project || "wt", slug].filter(Boolean);
+  return `herdr-${parts.join("-")}`.slice(0, 63);
 }
 
 function requireHostTools() {
-  for (const tool of ['docker', 'git', 'devcontainer']) {
-    if (!have(tool, tool === 'docker' ? ['--version'] : ['--help'])) {
+  for (const tool of ["docker", "git", "devcontainer"]) {
+    if (!have(tool, tool === "docker" ? ["--version"] : ["--help"])) {
       die(`${tool} is required but was not found on PATH`);
     }
   }
@@ -94,46 +105,50 @@ function requireConfig(checkout, config) {
  * while it is true.
  */
 function markContainerised(workspaceId, label, config, on = true) {
-  const icon = config.WTDC_CONTAINER_ICON || '';
+  const icon = config.WTDC_CONTAINER_ICON || "";
   if (!workspaceId) return false;
   if (!icon) return false;
   return on
-    ? herdr.reportWorkspaceToken(workspaceId, 'name', `${icon} ${label}`)
-    : herdr.clearWorkspaceToken(workspaceId, 'name');
+    ? herdr.reportWorkspaceToken(workspaceId, "name", `${icon} ${label}`)
+    : herdr.clearWorkspaceToken(workspaceId, "name");
 }
 
 function provisionFailed() {
   const checkout = process.env.WTDC_PROVISION_CHECKOUT;
-  const label = process.env.WTDC_PROVISION_LABEL || 'worktree';
+  const label = process.env.WTDC_PROVISION_LABEL || "worktree";
   if (checkout && state.has(checkout)) {
     // Drop the entry so the worktree stays retryable: hook_created skips
     // worktrees that already have state, so a half-written entry would stop the
     // prompt from ever appearing again.
     state.del(checkout);
   }
-  notify(`Dev container failed: ${label}`, 'the build tab has the error; provision it again', 'request');
+  notify(
+    `Dev container failed: ${label}`,
+    "the build tab has the error; provision it again",
+    "request",
+  );
 }
 
-function provision(checkout, workspaceId = '', labelArg = '') {
+function provision(checkout, workspaceId = "", labelArg = "") {
   const config = loadConfig();
   const label = labelArg || path.basename(checkout);
   // Set by panes/boot.mjs, which is showing the progress and will hand its own pane to
   // the container shell when this returns.
-  const handedOver = process.env.WTDC_HANDOFF === '1';
+  const handedOver = process.env.WTDC_HANDOFF === "1";
 
   process.env.WTDC_PROVISION_LABEL = label;
   process.env.WTDC_PROVISION_CHECKOUT = checkout;
-  process.on('exit', provisionFailed);
+  process.on("exit", provisionFailed);
 
   const src = requireConfig(checkout, config);
   const slug = uniqueSlug(slugify(label), checkout);
   const project = projectFor(checkout);
   const merged = dc.mergedPathFor(checkout);
 
-  emit('inspect', phaseStart('inspect') * 100, label);
+  emit("inspect", phaseStart("inspect") * 100, label);
   step(`Preparing dev container for ${label}`);
   detail(`worktree   ${checkout}`);
-  detail(`project    ${project || 'unknown'}`);
+  detail(`project    ${project || "unknown"}`);
   detail(`config     ${src}`);
   detail(`merged     ${merged}`);
 
@@ -156,20 +171,22 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   try {
     const planned = dc.planProvision(src, config, checkout);
     if (imageInfo.platformMismatch(planned.image)) {
-      die(`${planned.image} is on this machine as ${imageInfo.localPlatform(planned.image)}, `
-        + `but this host is ${imageInfo.hostPlatform()}.
+      die(
+        `${planned.image} is on this machine as ${imageInfo.localPlatform(planned.image)}, ` +
+          `but this host is ${imageInfo.hostPlatform()}.
 
    Nothing here can execute it, and provisioning fails a long way from the
    cause — the devcontainer CLI builds a uid-remapped copy with FROM on that
    image, and the shell inside the copy does not run. One command fixes it:
 
-     docker pull --platform ${imageInfo.hostPlatform()} ${planned.image}`);
+     docker pull --platform ${imageInfo.hostPlatform()} ${planned.image}`,
+      );
     }
   } catch {
     // Nothing to check. `die` above cannot land here — it exits rather than throws.
   }
 
-  emit('merge', phaseStart('merge') * 100, path.basename(merged));
+  emit("merge", phaseStart("merge") * 100, path.basename(merged));
   try {
     dc.buildMerged(src, merged, config, checkout);
   } catch (err) {
@@ -186,43 +203,52 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   // features, and does nothing extra when it declares none. Warning on "no prebuilt image
   // configured" got this backwards — with no template set that was every provision,
   // including the ones that are a `docker run`, so it cried wolf on the fast path.
-  const derived = Object.keys(JSON.parse(fs.readFileSync(merged, 'utf8')).features || {});
+  const derived = Object.keys(JSON.parse(fs.readFileSync(merged, "utf8")).features || {});
   if (derived.length) {
-    warn(`this build derives a per-worktree image from ${derived.length} feature(s) `
-      + '(~25s warm, minutes cold)');
-    detail('to skip that, name a prebuilt image in your devcontainer.json, or set WTDC_TEMPLATE');
-    if (fs.existsSync(path.join(ROOT, 'images', 'manifest.json'))) {
-      detail('  base | node | python | rust  (see images/README.md)');
+    warn(
+      `this build derives a per-worktree image from ${derived.length} feature(s) ` +
+        "(~25s warm, minutes cold)",
+    );
+    detail("to skip that, name a prebuilt image in your devcontainer.json, or set WTDC_TEMPLATE");
+    if (fs.existsSync(path.join(ROOT, "images", "manifest.json"))) {
+      detail("  base | node | python | rust  (see images/README.md)");
     }
   }
 
   // Persist before the slow work, so a crash during the build still leaves
   // teardown able to find and clean up the merged config.
   state.set(checkout, {
-    label, slug, project, checkout_path: checkout,
-    container_id: '', container_name: '',
-    container_workspace: '', remote_user: '',
-    merged_config: merged, source_config: src,
+    label,
+    slug,
+    project,
+    checkout_path: checkout,
+    container_id: "",
+    container_name: "",
+    container_workspace: "",
+    remote_user: "",
+    merged_config: merged,
+    source_config: src,
   });
 
-  step('Building and starting the container (this can take a while)');
+  step("Building and starting the container (this can take a while)");
   const up = dc.up(checkout, merged, config, (containerId) => {
-    emit('ready', phaseStart('ready') * 100, containerId ? containerId.slice(0, 12) : '');
+    emit("ready", phaseStart("ready") * 100, containerId ? containerId.slice(0, 12) : "");
   });
-  if (!up.containerId) die('devcontainer up did not report a container id');
+  if (!up.containerId) die("devcontainer up did not report a container id");
 
   const cname = containerNameFor(slug, project);
-  if (tryRun('docker', ['rename', up.containerId, cname]).status === 0) {
+  if (tryRun("docker", ["rename", up.containerId, cname]).status === 0) {
     state.patch(checkout, { container_name: cname });
   } else {
     warn(`could not rename container to ${cname}`);
   }
 
-  const remoteUser = up.remoteUser
-    || (tryRun('docker', ['inspect', '-f', '{{.Config.User}}', up.containerId]).stdout || '').trim()
-    || '';
+  const remoteUser =
+    up.remoteUser ||
+    (tryRun("docker", ["inspect", "-f", "{{.Config.User}}", up.containerId]).stdout || "").trim() ||
+    "";
 
-  emit('finish', phaseStart('finish') * 100, cname);
+  emit("finish", phaseStart("finish") * 100, cname);
 
   state.patch(checkout, {
     container_id: up.containerId,
@@ -235,14 +261,14 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   // containerised, without occupying a machine node.
   markContainerised(workspaceId, label, config);
 
-  info('');
+  info("");
   ok(`${label} is running in a dev container`);
   detail(`container: ${cname} (${up.containerId.slice(0, 12)})`);
-  detail(`container cwd: ${up.containerWorkspace || '<default>'}`);
+  detail(`container cwd: ${up.containerWorkspace || "<default>"}`);
 
-  if (config.WTDC_OPEN_CONTAINER_PANE === '1' && !handedOver) {
-    herdr.openPluginPane('container', {
-      placement: 'tab',
+  if (config.WTDC_OPEN_CONTAINER_PANE === "1" && !handedOver) {
+    herdr.openPluginPane("container", {
+      placement: "tab",
       workspace: workspaceId || undefined,
       cwd: checkout,
       env: {
@@ -254,19 +280,19 @@ function provision(checkout, workspaceId = '', labelArg = '') {
       },
       focus: true,
     });
-    ok('opened the container terminal in this worktree');
+    ok("opened the container terminal in this worktree");
   } else if (handedOver) {
     // A setup screen is on screen (panes/boot.mjs runs this process) and turns its own
     // pane into the container terminal when the build finishes. Opening a tab as well
     // would leave two terminals in the worktree and no way to tell which is real.
-    detail('the setup screen is turning itself into the container terminal');
+    detail("the setup screen is turning itself into the container terminal");
   } else {
-    detail('container tab opening is disabled by WTDC_OPEN_CONTAINER_PANE=0');
+    detail("container tab opening is disabled by WTDC_OPEN_CONTAINER_PANE=0");
   }
 
-  notify(`Dev container ready: ${label}`, 'the container terminal is attached', 'done');
-  emit('done', 100, cname);
-  process.removeListener('exit', provisionFailed);
+  notify(`Dev container ready: ${label}`, "the container terminal is attached", "done");
+  emit("done", 100, cname);
+  process.removeListener("exit", provisionFailed);
 }
 
 // ------------------------------------------------------------------- teardown
@@ -279,27 +305,36 @@ function teardown(checkout, force = false) {
     return;
   }
 
-  if (config.WTDC_KEEP_CONTAINER === '1' && !force) {
-    warn(`WTDC_KEEP_CONTAINER=1: leaving container ${(entry.container_id || '').slice(0, 12)} running`);
+  if (config.WTDC_KEEP_CONTAINER === "1" && !force) {
+    warn(
+      `WTDC_KEEP_CONTAINER=1: leaving container ${(entry.container_id || "").slice(0, 12)} running`,
+    );
   } else {
-    step('Destroying the container');
+    step("Destroying the container");
     dc.down(checkout, entry.merged_config, entry.container_id);
   }
 
   if (entry.merged_config) {
     try {
       fs.rmSync(path.dirname(entry.merged_config), { recursive: true, force: true });
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
   }
 
   // Take the marker off, unless the container was deliberately kept — in which case it is
   // still there, and the row should still say so.
-  if (config.WTDC_KEEP_CONTAINER !== '1' || force) {
-    markContainerised(herdr.workspaceIdFor(entry.checkout_path), entry.label || path.basename(entry.checkout_path), config, false);
+  if (config.WTDC_KEEP_CONTAINER !== "1" || force) {
+    markContainerised(
+      herdr.workspaceIdFor(entry.checkout_path),
+      entry.label || path.basename(entry.checkout_path),
+      config,
+      false,
+    );
   }
 
   state.del(checkout);
-  ok('torn down');
+  ok("torn down");
 }
 
 // --------------------------------------------------------------------- status
@@ -308,11 +343,11 @@ function status() {
   const entries = state.list();
   process.stderr.write(`\x1b[34mdev containers\x1b[0m\n`);
   if (entries.length === 0) {
-    process.stderr.write('  \x1b[2mnone tracked\x1b[0m\n');
+    process.stderr.write("  \x1b[2mnone tracked\x1b[0m\n");
     return;
   }
   for (const e of entries) {
-    const alive = dc.containerIsRunning(e.container_id) ? 'running' : 'not running';
+    const alive = dc.containerIsRunning(e.container_id) ? "running" : "not running";
     const label = e.label || path.basename(e.checkout_path);
     process.stderr.write(`  ${label.padEnd(30)} ${alive.padEnd(12)} ${e.checkout_path}\n`);
   }
@@ -322,7 +357,7 @@ function status() {
 
 function hookCreated() {
   const config = loadConfig();
-  if (config.WTDC_ENABLED !== '1') return;
+  if (config.WTDC_ENABLED !== "1") return;
 
   const checkout = herdr.eventWorktreePath();
   if (!checkout) return;
@@ -333,11 +368,13 @@ function hookCreated() {
   if (state.has(checkout)) return;
   if (!dc.resolveConfigPath(checkout, config)) {
     const base = dc.configBaseDir(checkout, config);
-    info(`no devcontainer config in ${base === checkout ? checkout : base + ' (main checkout)'}; skipping`);
+    info(
+      `no devcontainer config in ${base === checkout ? checkout : base + " (main checkout)"}; skipping`,
+    );
     return;
   }
 
-  if (config.WTDC_ON_CREATE === 'never') return;
+  if (config.WTDC_ON_CREATE === "never") return;
 
   const env = {
     WTDC_CHECKOUT: checkout,
@@ -352,21 +389,28 @@ function hookCreated() {
     WTDC_TARGET_PANE: herdr.shellPaneOf(workspaceId),
   };
 
-  if (config.WTDC_ON_CREATE === 'auto') {
-    herdr.openPluginPane('boot', {
-      placement: 'zoomed', workspace: workspaceId || undefined, cwd: checkout,
-      env, focus: true, pane: env.WTDC_TARGET_PANE,
+  if (config.WTDC_ON_CREATE === "auto") {
+    herdr.openPluginPane("boot", {
+      placement: "zoomed",
+      workspace: workspaceId || undefined,
+      cwd: checkout,
+      env,
+      focus: true,
+      pane: env.WTDC_TARGET_PANE,
     });
   } else {
-    herdr.openPluginPane('prompt', {
-      placement: 'overlay', workspace: workspaceId || undefined, cwd: checkout, env,
+    herdr.openPluginPane("prompt", {
+      placement: "overlay",
+      workspace: workspaceId || undefined,
+      cwd: checkout,
+      env,
     });
   }
 }
 
 function hookRemoved() {
   const config = loadConfig();
-  if (config.WTDC_ENABLED !== '1') return;
+  if (config.WTDC_ENABLED !== "1") return;
 
   const checkout = herdr.eventWorktreePath();
   if (!checkout) return;
@@ -380,8 +424,8 @@ function hookRemoved() {
 
 function startup() {
   const config = loadConfig();
-  if (config.WTDC_ENABLED !== '1') return;
-  if (!have('docker', ['--version'])) return;
+  if (config.WTDC_ENABLED !== "1") return;
+  if (!have("docker", ["--version"])) return;
 
   const entries = state.list();
   const running = entries.filter((e) => dc.containerIsRunning(e.container_id)).length;
@@ -403,44 +447,62 @@ function startup() {
  * and for anyone whose Herdr keeps its config somewhere unusual.
  */
 function installShell() {
-  const shellPath = path.join(ROOT, 'lib', 'wtdc', 'shell.mjs');
-  const file = process.env.WTDC_CONFIG_FILE
-    || path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || '', '.config'),
-      'herdr', 'config.toml');
-  const stateFile = process.env.WTDC_STATE_FILE
-    || path.join(process.env.XDG_STATE_HOME || path.join(process.env.HOME || '', '.local', 'state'),
-      'herdr', 'plugins', 'worktree-devcontainer', 'state.json');
+  const shellPath = path.join(ROOT, "lib", "wtdc", "shell.mjs");
+  const file =
+    process.env.WTDC_CONFIG_FILE ||
+    path.join(
+      process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config"),
+      "herdr",
+      "config.toml",
+    );
+  const stateFile =
+    process.env.WTDC_STATE_FILE ||
+    path.join(
+      process.env.XDG_STATE_HOME || path.join(process.env.HOME || "", ".local", "state"),
+      "herdr",
+      "plugins",
+      "worktree-devcontainer",
+      "state.json",
+    );
 
-  let original = '';
+  let original = "";
   try {
-    original = fs.readFileSync(file, 'utf8');
-  } catch { /* no config yet, or unreadable: fall through and create it */ }
+    original = fs.readFileSync(file, "utf8");
+  } catch {
+    /* no config yet, or unreadable: fall through and create it */
+  }
 
-  const edit = setTomlKey(original, 'terminal', 'default_shell', shellPath);
+  const edit = setTomlKey(original, "terminal", "default_shell", shellPath);
   if (!edit.ok) {
-    process.stdout.write(`error: ${file} — ${edit.reason},\n`
-      + 'so this plugin will not touch it. Set the key by hand:\n\n'
-      + `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`);
+    process.stdout.write(
+      `error: ${file} — ${edit.reason},\n` +
+        "so this plugin will not touch it. Set the key by hand:\n\n" +
+        `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`,
+    );
     return 1;
   }
 
   if (!edit.changed) {
     process.stdout.write(`already installed: terminal.default_shell is ${shellPath}\n`);
   } else {
-    if (original !== '') {
+    if (original !== "") {
       const backup = `${file}.bak-before-wtdc`;
       try {
         fs.writeFileSync(backup, original);
-      } catch { /* a read-only config dir is reported by the write below */ }
+      } catch {
+        /* a read-only config dir is reported by the write below */
+      }
       process.stdout.write(`backed up ${file} to ${backup}\n`);
     }
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, edit.text);
     } catch (err) {
-      process.stdout.write(`error: could not write ${file}: ${err.message}\n\n`
-        + 'Add this by hand instead:\n\n'
-        + `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`);
+      process.stdout.write(
+        `error: could not write ${file}: ${err.message}\n\n` +
+          "Add this by hand instead:\n\n" +
+          `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`,
+      );
       return 1;
     }
     process.stdout.write(`set terminal.default_shell = ${shellPath}\n`);
@@ -458,9 +520,9 @@ It reads ${stateFile}
   // Reload here rather than printing a line and hoping: the failure this prevents is
   // silent, so the step people forget is the one that has to be automatic.
   if (herdr.reloadConfig()) {
-    process.stdout.write('\nreloaded the server config, so new panes already use it\n');
+    process.stdout.write("\nreloaded the server config, so new panes already use it\n");
   } else {
-    process.stdout.write('\nnow run:  herdr server reload-config\n');
+    process.stdout.write("\nnow run:  herdr server reload-config\n");
   }
   return 0;
 }
@@ -472,14 +534,14 @@ function actionInstallShell() {
 
 function actionProvision() {
   const checkout = herdr.contextWorktree();
-  if (!checkout) die('this action must be invoked from a worktree workspace');
-  const workspaceId = process.env.HERDR_WORKSPACE_ID || '';
+  if (!checkout) die("this action must be invoked from a worktree workspace");
+  const workspaceId = process.env.HERDR_WORKSPACE_ID || "";
   provision(checkout, workspaceId, herdr.workspaceLabel(workspaceId) || path.basename(checkout));
 }
 
 function actionTeardown() {
   const checkout = herdr.contextWorktree();
-  if (!checkout) die('this action must be invoked from a worktree workspace');
+  if (!checkout) die("this action must be invoked from a worktree workspace");
   teardown(checkout);
 }
 
@@ -501,7 +563,7 @@ const sleepMs = (ms) => {
  */
 function bootLaunch(checkout, workspaceId, label, targetPane) {
   if (!workspaceId) {
-    warn('no workspace for the new worktree; the setup screen will open wherever you are');
+    warn("no workspace for the new worktree; the setup screen will open wherever you are");
   }
 
   const deadline = Date.now() + 10_000;
@@ -519,16 +581,18 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
   // is not there — which would leave them having answered "yes" to nothing at all.
   const pane = herdr.resolveTargetPane(workspaceId, targetPane);
   if (!pane) {
-    warn('the worktree has no pane left to show the setup screen in; it will open wherever you are');
+    warn(
+      "the worktree has no pane left to show the setup screen in; it will open wherever you are",
+    );
   }
 
   // An image typed into the prompt travels with the build, so the setup screen has to be
   // told. Environment only and only when one was given, so the config's own image is used
   // whenever the field was left as a placeholder.
-  const override = (process.env.WTDC_OVERRIDE_IMAGE || '').trim();
+  const override = (process.env.WTDC_OVERRIDE_IMAGE || "").trim();
 
-  herdr.openPluginPane('boot', {
-    placement: 'zoomed',
+  herdr.openPluginPane("boot", {
+    placement: "zoomed",
     workspace: workspaceId || undefined,
     cwd: checkout,
     // The worktree's own pane, captured by the hook before this plugin opened
@@ -552,7 +616,7 @@ function main() {
   // the dependable signal: postCreateCommand writes it, so it only exists in a
   // container this plugin provisioned.
   if (insideContainer()) {
-    process.stdout.write('worktree-devcontainer: disabled inside a dev container\n');
+    process.stdout.write("worktree-devcontainer: disabled inside a dev container\n");
     return;
   }
 
@@ -564,26 +628,31 @@ function main() {
   const [cmd, ...rest] = process.argv.slice(2);
 
   switch (cmd) {
-    case 'hook-created': return hookCreated();
-    case 'hook-removed': return hookRemoved();
-    case 'startup': return startup();
-    case 'provision': {
-      if (!rest[0]) die('worktree path required');
-      return provision(rest[0], rest[1] || '', rest[2] || '');
+    case "hook-created":
+      return hookCreated();
+    case "hook-removed":
+      return hookRemoved();
+    case "startup":
+      return startup();
+    case "provision": {
+      if (!rest[0]) die("worktree path required");
+      return provision(rest[0], rest[1] || "", rest[2] || "");
     }
-    case 'teardown': {
-      if (!rest[0]) die('worktree path required');
-      return teardown(rest[0], rest[1] === '--force' || rest[1] === '1');
+    case "teardown": {
+      if (!rest[0]) die("worktree path required");
+      return teardown(rest[0], rest[1] === "--force" || rest[1] === "1");
     }
-    case 'status': return status();
-    case 'boot-launch': {
-      if (!rest[0]) die('worktree path required');
-      return bootLaunch(rest[0], rest[1] || '', rest[2] || '', rest[3] || '');
+    case "status":
+      return status();
+    case "boot-launch": {
+      if (!rest[0]) die("worktree path required");
+      return bootLaunch(rest[0], rest[1] || "", rest[2] || "", rest[3] || "");
     }
-    case 'install-shell': return actionInstallShell();
-    case 'help':
-    case '-h':
-    case '--help':
+    case "install-shell":
+      return actionInstallShell();
+    case "help":
+    case "-h":
+    case "--help":
       process.stdout.write(`
 worktree-devcontainer — run each Herdr worktree's devcontainer and open
 terminals inside it, keeping the worktree grouped under its repo.
@@ -598,16 +667,16 @@ terminals inside it, keeping the worktree grouped under its repo.
   action <id>             plugin action entry point
 `);
       return;
-    case 'action': {
+    case "action": {
       const id = rest[0];
-      if (id === 'provision') return actionProvision();
-      if (id === 'teardown') return actionTeardown();
-      if (id === 'status') return status();
-      if (id === 'install-shell') return actionInstallShell();
-      return die(`unknown action: ${id || ''}`);
+      if (id === "provision") return actionProvision();
+      if (id === "teardown") return actionTeardown();
+      if (id === "status") return status();
+      if (id === "install-shell") return actionInstallShell();
+      return die(`unknown action: ${id || ""}`);
     }
     default:
-      return die(`unknown command: ${cmd || '(none)'} (try: help)`);
+      return die(`unknown command: ${cmd || "(none)"} (try: help)`);
   }
 }
 

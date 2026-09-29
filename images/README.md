@@ -78,24 +78,24 @@ images itself, is on the fast path without any template configured.
 ## What's in each image
 
 Sizes are the published `:latest` tags. Everything is inherited from `base`, so this
-table is what each one *adds* — pick a row and you also get the first.
+table is what each one _adds_ — pick a row and you also get the first.
 
-| | `base` | `node` | `python` | `rust` |
-|---|---|---|---|---|
-| **Size** | 67 MB | 138 MB | 106 MB | 360 MB |
-| **Base OS** | Ubuntu 24.04 | ← | ← | ← |
-| **User** | `dev`, uid 1000, NOPASSWD sudo | ← | ← | ← |
-| **Workdir** | `/workspaces`, owned by `dev` | ← | ← | ← |
-| **herdr** | 0.9.1 at `/usr/local/bin/herdr` | ← | ← | ← |
-| git, curl, jq, ripgrep, less | ✅ | ← | ← | ← |
-| ca-certificates, tzdata | ✅ | ← | ← | ← |
-| **Node 24 LTS** + corepack | — | ✅ | — | — |
-| **CPython 3** + venv + pip | — | — | ✅ | — |
-| **`uv`** | — | — | ✅ | — |
-| **rustup** stable, minimal profile | — | — | — | ✅ |
-| `build-essential`, `pkg-config`, `libssl-dev` | — | — | — | ✅ |
-| `RUSTUP_HOME`, `CARGO_HOME` on `PATH` | — | — | — | ✅ |
-| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv` | — | — | ✅ | — |
+|                                               | `base`                          | `node` | `python` | `rust` |
+| --------------------------------------------- | ------------------------------- | ------ | -------- | ------ |
+| **Size**                                      | 67 MB                           | 138 MB | 106 MB   | 360 MB |
+| **Base OS**                                   | Ubuntu 24.04                    | ←      | ←        | ←      |
+| **User**                                      | `dev`, uid 1000, NOPASSWD sudo  | ←      | ←        | ←      |
+| **Workdir**                                   | `/workspaces`, owned by `dev`   | ←      | ←        | ←      |
+| **herdr**                                     | 0.9.1 at `/usr/local/bin/herdr` | ←      | ←        | ←      |
+| git, curl, jq, ripgrep, less                  | ✅                              | ←      | ←        | ←      |
+| ca-certificates, tzdata                       | ✅                              | ←      | ←        | ←      |
+| **Node 24 LTS** + corepack                    | —                               | ✅     | —        | —      |
+| **CPython 3** + venv + pip                    | —                               | —      | ✅       | —      |
+| **`uv`**                                      | —                               | —      | ✅       | —      |
+| **rustup** stable, minimal profile            | —                               | —      | —        | ✅     |
+| `build-essential`, `pkg-config`, `libssl-dev` | —                               | —      | —        | ✅     |
+| `RUSTUP_HOME`, `CARGO_HOME` on `PATH`         | —                               | —      | —        | ✅     |
+| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv`    | —                               | —      | ✅       | —      |
 
 ← means inherited from the column to the left, not absent. ✓ means added by that image.
 

@@ -26,16 +26,16 @@ on:
   push:
     branches: [main]
     paths:
-      - 'images/**'
-      - '.github/workflows/images.yml'
+      - "images/**"
+      - ".github/workflows/images.yml"
   pull_request:
     paths:
-      - 'images/**'
-      - '.github/workflows/images.yml'
+      - "images/**"
+      - ".github/workflows/images.yml"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build (defaults to the manifest tag)'
+        description: "Tag to build (defaults to the manifest tag)"
         required: false
         type: string
 

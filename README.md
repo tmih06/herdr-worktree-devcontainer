@@ -11,13 +11,13 @@ shells run.
 
 ## Requirements
 
-| Tool | Why |
-|---|---|
-| Herdr 0.9.0+ | the plugin API |
-| Docker | runs the container |
+| Tool           | Why                                                   |
+| -------------- | ----------------------------------------------------- |
+| Herdr 0.9.0+   | the plugin API                                        |
+| Docker         | runs the container                                    |
 | `devcontainer` | the Dev Container CLI (`npm i -g @devcontainers/cli`) |
-| `node` | runs the plugin |
-| `git` | worktree metadata |
+| `node`         | runs the plugin                                       |
+| `git`          | worktree metadata                                     |
 
 `node` is not optional: the Dev Container CLI is an npm package, so it is
 already on any machine where `devcontainer` runs.
@@ -79,7 +79,7 @@ that is not knowable from the config file alone:
 
 The image line is the part worth having: whether it is already on this machine,
 whether the registry has published a newer one, and how big a pull would be. It
-is resolved *after* the first frame and fills in when it arrives, so a slow
+is resolved _after_ the first frame and fills in when it arrives, so a slow
 registry never holds the question hostage — and when it cannot be answered the
 line says so rather than implying the image is current.
 
@@ -88,7 +88,7 @@ drift from what actually runs. `Features` names what a template would drop, and
 `Setup` says what the build will actually cost — including the part that is easy
 to forget. The Dev Container CLI does not run your image: when the container
 user's uid differs from the host's, it builds a `vsc-…-uid` copy of the image
-first, and on a host with a different uid that is *every* provision, including
+first, and on a host with a different uid that is _every_ provision, including
 ones that declare no features and look exactly like a `docker run`. Saying "no
 image build" and then spending half a minute building an image is not a
 description of anything, so the line accounts for it. Where the image does not
@@ -109,19 +109,19 @@ the instant the dialog opens; only once you are on the image does a letter type
 into it, which is the only way an image reference containing `n` or `y` can be
 typed at all.
 
-| | |
-|---|---|
-| `↑` `↓` | move between the image and the answer |
-| `y` `Enter` | yes — from the answer; leaves the field, from the image |
-| `n` `Esc` `q` | no — or, in the field, put the config's image back |
-| `space` | toggle the checkbox |
-| `←` `→` `Backspace` `Ctrl-U` | caret, delete, clear the image field |
+|                              |                                                         |
+| ---------------------------- | ------------------------------------------------------- |
+| `↑` `↓`                      | move between the image and the answer                   |
+| `y` `Enter`                  | yes — from the answer; leaves the field, from the image |
+| `n` `Esc` `q`                | no — or, in the field, put the config's image back      |
+| `space`                      | toggle the checkbox                                     |
+| `←` `→` `Backspace` `Ctrl-U` | caret, delete, clear the image field                    |
 
 The check waits for you to stop typing — one second of quiet — so a check per
 keystroke cannot turn a word into a queue of registry lookups, and a lookup that
 comes back for an image you have already replaced is thrown away rather than
 shown. What you type is what gets built: the override travels with the build and
-replaces the image *only*, so unlike a template it leaves the config's `features`
+replaces the image _only_, so unlike a template it leaves the config's `features`
 in place. Leave the field alone and the config's own image is used.
 
 Answer yes and a setup screen opens zoomed over that worktree's pane, with a
@@ -159,18 +159,18 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
 ### Actions
 
-| Action | What it does |
-|---|---|
-| `provision` | build a container for the current worktree |
-| `status` | list tracked worktrees and whether their containers run |
-| `teardown` | destroy the current worktree's container |
+| Action          | What it does                                                                 |
+| --------------- | ---------------------------------------------------------------------------- |
+| `provision`     | build a container for the current worktree                                   |
+| `status`        | list tracked worktrees and whether their containers run                      |
+| `teardown`      | destroy the current worktree's container                                     |
 | `install-shell` | point `terminal.default_shell` at the dispatcher, back up the config, reload |
 
 ## How it works
 
 Herdr spawns `terminal.default_shell` for each new pane. The plugin points
-that at a dispatcher which asks one question: *is this pane's working directory
-inside a worktree that has a container?* If yes, `docker exec` into it. If no,
+that at a dispatcher which asks one question: _is this pane's working directory
+inside a worktree that has a container?_ If yes, `docker exec` into it. If no,
 `exec` your real `$SHELL` — so the dispatcher is inert everywhere else.
 
 ```
@@ -185,7 +185,7 @@ Two things make this work rather than merely look like it works:
 **Agent detection still functions.** Herdr classifies agents from the pane's
 screen buffer, not the process tree, so an agent running inside `docker exec` is
 detected, named, and tracked normally. (One caveat: `herdr agent start` checks
-that the pane's *interactive shell* owns the foreground, and on the host that
+that the pane's _interactive shell_ owns the foreground, and on the host that
 process is `docker`. Launching agents by typing them works; programmatic start
 may not.)
 
@@ -239,7 +239,7 @@ The simplest version that works, and the one this repository uses for itself:
   "name": "myproject",
   "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest",
   "remoteUser": "dev",
-  "postCreateCommand": "npm ci"
+  "postCreateCommand": "npm ci",
 }
 ```
 
@@ -255,9 +255,9 @@ Declaring `features` is the alternative, and it is the one to know the cost of:
   "name": "myproject",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    "ghcr.io/devcontainers/features/node:1": {}
+    "ghcr.io/devcontainers/features/node:1": {},
   },
-  "postCreateCommand": "npm ci"
+  "postCreateCommand": "npm ci",
 }
 ```
 
@@ -272,7 +272,7 @@ Two things the plugin adds to a copy of this file, both outside your checkout, s
 `git status` stays clean:
 
 - `id -un > /tmp/wtdc-user` appended to `postCreateCommand`. `devcontainer up` returns
-  *before* `postCreateCommand` finishes, so this file is how the plugin knows the
+  _before_ `postCreateCommand` finishes, so this file is how the plugin knows the
   container is actually ready rather than merely started.
 - `--hostname <branch>` in `runArgs`, so the prompt says which worktree you are in. A
   `--hostname` you set yourself always wins. See `WTDC_HOSTNAME`.
@@ -287,20 +287,20 @@ Herdr copies [`config/config.default.env`](config/config.default.env) to its
 plugin config directory on first use; edit that copy. Environment variables
 given when invoking `bin/wtdc.mjs` take precedence.
 
-| Key | Default | Meaning |
-|---|---|---|
-| `WTDC_ENABLED` | `1` | master switch for hooks and actions |
-| `WTDC_ON_CREATE` | `prompt` | `prompt`, `auto`, or `never` |
-| `WTDC_NOTIFY` | `1` | notify when the build finishes or fails |
-| `WTDC_BUILD_TIMEOUT` | `1800` | seconds to wait for the readiness marker |
-| `WTDC_KEEP_CONTAINER` | `0` | keep the container when the worktree is removed |
-| `WTDC_OPEN_CONTAINER_PANE` | `1` | open a container tab when the build finishes |
-| `WTDC_HOSTNAME` | `branch` | container hostname: `branch`, `off`, or a literal |
-| `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label, for as long as its container exists |
-| `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
-| `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the source directory |
-| `WTDC_CONFIG_SOURCE` | `main` | read the config from the main checkout's file on disk, or `worktree` for each worktree's own copy |
-| `WTDC_TEMPLATE` / `WTDC_IMAGE` | *(blank)* | run a prebuilt image instead of the one your config declares |
+| Key                            | Default                                              | Meaning                                                                                           |
+| ------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `WTDC_ENABLED`                 | `1`                                                  | master switch for hooks and actions                                                               |
+| `WTDC_ON_CREATE`               | `prompt`                                             | `prompt`, `auto`, or `never`                                                                      |
+| `WTDC_NOTIFY`                  | `1`                                                  | notify when the build finishes or fails                                                           |
+| `WTDC_BUILD_TIMEOUT`           | `1800`                                               | seconds to wait for the readiness marker                                                          |
+| `WTDC_KEEP_CONTAINER`          | `0`                                                  | keep the container when the worktree is removed                                                   |
+| `WTDC_OPEN_CONTAINER_PANE`     | `1`                                                  | open a container tab when the build finishes                                                      |
+| `WTDC_HOSTNAME`                | `branch`                                             | container hostname: `branch`, `off`, or a literal                                                 |
+| `WTDC_CONTAINER_ICON`          | `🐳`                                                 | marker prepended to the worktree's sidebar label, for as long as its container exists             |
+| `WTDC_EXTRA_MOUNTS`            |                                                      | extra `devcontainer up --mount` value                                                             |
+| `WTDC_CONFIG_CANDIDATES`       | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the source directory                                                   |
+| `WTDC_CONFIG_SOURCE`           | `main`                                               | read the config from the main checkout's file on disk, or `worktree` for each worktree's own copy |
+| `WTDC_TEMPLATE` / `WTDC_IMAGE` | _(blank)_                                            | run a prebuilt image instead of the one your config declares                                      |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
 authoritative; the plugin injects nothing but a readiness marker and a
@@ -321,7 +321,7 @@ checked out on, folded into a legal hostname (`feat/payments` becomes
 characters).
 
 Two things worth knowing: a hostname is fixed when a container is created, so
-changing `WTDC_HOSTNAME` applies to the *next* provision rather than to a
+changing `WTDC_HOSTNAME` applies to the _next_ provision rather than to a
 container that is already running; and a `--hostname` in your own
 `devcontainer.json` `runArgs` always wins, because your config is authoritative
 about your container. Set `WTDC_HOSTNAME=off` to keep the container id, or a
@@ -338,10 +338,10 @@ WTDC_TEMPLATE=node     # a template by name
 WTDC_IMAGE=my/image:tag  # or your own image
 ```
 
-| Setup | Time |
-|---|---|
+| Setup                         | Time                    |
+| ----------------------------- | ----------------------- |
 | Building a per-worktree image | ~25s warm, minutes cold |
-| Prebuilt image | ~4s |
+| Prebuilt image                | ~4s                     |
 
 `WTDC_TEMPLATE` is blank by default, so **your `devcontainer.json` decides what
 runs**. A default that quietly replaced the declared image would make that file
@@ -396,7 +396,7 @@ works on a checkout with nothing to compile.
 
 **Pane commands are spelled through `$HERDR_PLUGIN_ROOT`, not left relative.**
 A plugin pane runs with the working directory it was opened with — the worktree's
-checkout — so `["node", "panes/boot.mjs"]` resolves inside the *user's* repository.
+checkout — so `["node", "panes/boot.mjs"]` resolves inside the _user's_ repository.
 It appears to work while you develop this plugin in a worktree of itself, and does
 nothing at all everywhere else. Herdr does not expand the variable, hence the
 `sh -c "exec node …"` in `herdr-plugin.toml`.

@@ -19,34 +19,39 @@
 //
 // Keys:  Esc  cancel the build and close      (after the build) any key  close
 
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PHASES, isProgressLine, parseProgressLine } from '../lib/wtdc/progress.mjs';
-import { loadConfig } from '../lib/wtdc/config.mjs';
-import { get as stateFor } from '../lib/wtdc/state.mjs';
-import { enterContainerShell } from '../lib/wtdc/containerShell.mjs';
-import { closePane, isLastPane, openHostTab } from '../lib/wtdc/herdr.mjs';
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { PHASES, isProgressLine, parseProgressLine } from "../lib/wtdc/progress.mjs";
+import { loadConfig } from "../lib/wtdc/config.mjs";
+import { get as stateFor } from "../lib/wtdc/state.mjs";
+import { enterContainerShell } from "../lib/wtdc/containerShell.mjs";
+import { closePane, isLastPane, openHostTab } from "../lib/wtdc/herdr.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, '..');
+const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, "..");
 
 const config = loadConfig();
-const checkout = process.env.WTDC_CHECKOUT || '';
+const checkout = process.env.WTDC_CHECKOUT || "";
 const label = process.env.WTDC_LABEL || path.basename(checkout);
-const workspace = process.env.WTDC_WORKSPACE || process.env.HERDR_WORKSPACE_ID || '';
+const workspace = process.env.WTDC_WORKSPACE || process.env.HERDR_WORKSPACE_ID || "";
 // The worktree's own shell pane, captured by the hook before this plugin put anything
 // on screen. Nothing else may be closed on the strength of it.
-const hostPane = process.env.WTDC_TARGET_PANE || '';
-const selfPane = process.env.HERDR_PANE_ID || '';
+const hostPane = process.env.WTDC_TARGET_PANE || "";
+const selfPane = process.env.HERDR_PANE_ID || "";
 
 const C = {
-  reset: '\x1b[0m', dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m',
-  yellow: '\x1b[33m', cyan: '\x1b[36m', blue: '\x1b[34m',
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
+  blue: "\x1b[34m",
 };
 
 if (!checkout) {
-  process.stdout.write('dev container: no worktree path was supplied\n');
+  process.stdout.write("dev container: no worktree path was supplied\n");
   process.exit(1);
 }
 
@@ -86,25 +91,29 @@ function bar(percent, indeterminate) {
   // up` reports nothing until it returns, so a number here would be a guess
   // dressed up as a measurement.
   const filled = indeterminate
-    ? Math.floor(((Date.now() / 120) % (BAR_WIDTH + 8)))
+    ? Math.floor((Date.now() / 120) % (BAR_WIDTH + 8))
     : Math.round((percent / 100) * BAR_WIDTH);
   const head = Math.min(filled, BAR_WIDTH);
-  return `${C.cyan}${'█'.repeat(head)}${C.dim}${'░'.repeat(Math.max(0, BAR_WIDTH - head))}${C.reset}`;
+  return `${C.cyan}${"█".repeat(head)}${C.dim}${"░".repeat(Math.max(0, BAR_WIDTH - head))}${C.reset}`;
 }
 
 function render() {
   const current = byKey[state.phase] || PHASES[0];
   const lines = [];
 
-  lines.push('');
+  lines.push("");
   lines.push(`  ${C.cyan}Setting up the dev container${C.reset}  ${C.dim}${label}${C.reset}`);
   lines.push(`  ${C.dim}${checkout}${C.reset}`);
-  lines.push('');
+  lines.push("");
 
-  lines.push(`  ${bar(state.percent, current.indeterminate)}  ${Math.round(state.percent)}%  ${C.dim}[${elapsed()}s]${C.reset}`);
-  lines.push('');
-  lines.push(`  ${C.blue}›${C.reset} ${current.label}${current.indeterminate ? `${C.dim} (working)${C.reset}` : ''}`);
-  lines.push('');
+  lines.push(
+    `  ${bar(state.percent, current.indeterminate)}  ${Math.round(state.percent)}%  ${C.dim}[${elapsed()}s]${C.reset}`,
+  );
+  lines.push("");
+  lines.push(
+    `  ${C.blue}›${C.reset} ${current.label}${current.indeterminate ? `${C.dim} (working)${C.reset}` : ""}`,
+  );
+  lines.push("");
 
   // Phase checklist, so a long build shows that it is moving through stages
   // rather than sitting on one line.
@@ -112,22 +121,28 @@ function render() {
     const end = (phaseStart(p.key) + p.share) * 100;
     const done = state.done || state.percent >= end;
     const active = !done && p.key === state.phase;
-    const mark = done ? `${C.green}✔${C.reset}` : active ? `${C.cyan}▸${C.reset}` : `${C.dim}·${C.reset}`;
-    lines.push(`   ${mark} ${done ? C.dim : active ? '' : C.dim}${p.label}${C.reset}`);
+    const mark = done
+      ? `${C.green}✔${C.reset}`
+      : active
+        ? `${C.cyan}▸${C.reset}`
+        : `${C.dim}·${C.reset}`;
+    lines.push(`   ${mark} ${done ? C.dim : active ? "" : C.dim}${p.label}${C.reset}`);
   }
 
   if (state.log.length) {
-    lines.push('');
-    lines.push(`  ${C.dim}── ${state.failed ? 'output' : 'detail'} ──${C.reset}`);
+    lines.push("");
+    lines.push(`  ${C.dim}── ${state.failed ? "output" : "detail"} ──${C.reset}`);
     for (const l of state.log.slice(-LOG_LINES)) {
       lines.push(`  ${state.failed ? C.red : C.dim}${l}${C.reset}`);
     }
   }
 
-  lines.push('');
+  lines.push("");
   if (state.failed) {
     lines.push(`  ${C.red}Setup failed.${C.reset} The worktree is untouched — fix the problem and`);
-    lines.push(`  run ${C.dim}herdr plugin action invoke worktree-devcontainer.provision${C.reset} to retry.`);
+    lines.push(
+      `  run ${C.dim}herdr plugin action invoke worktree-devcontainer.provision${C.reset} to retry.`,
+    );
   } else if (state.cancelled) {
     lines.push(`  ${C.yellow}Cancelled.${C.reset} No container was created.`);
   } else if (state.done) {
@@ -139,52 +154,48 @@ function render() {
     }
   }
 
-  lines.push('');
+  lines.push("");
   if (!state.done && !state.failed && !state.cancelled) {
     lines.push(`  ${C.dim}Esc to cancel${C.reset}`);
   } else {
     lines.push(`  ${C.dim}press any key to close${C.reset}`);
   }
-  lines.push('');
+  lines.push("");
 
   // Home + clear rather than clear+home: repainting from the top avoids
   // smearing when the previous frame was taller than the next one.
-  process.stdout.write(`\x1b[H\x1b[2J${lines.join('\n')}\n`);
+  process.stdout.write(`\x1b[H\x1b[2J${lines.join("\n")}\n`);
 }
 
 // ------------------------------------------------------------------- child
 
-const bin = path.join(pluginRoot, 'bin', 'wtdc.mjs');
-const child = spawn(
-  process.execPath,
-  [bin, 'provision', checkout, workspace, label],
-  {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // WTDC_HANDOFF tells the provisioner that a setup screen is on screen and will turn
-    // itself into the container terminal, so it must not also open a container tab.
-    env: { ...process.env, WTDC_PROGRESS: '1', WTDC_HANDOFF: '1' },
-  },
-);
+const bin = path.join(pluginRoot, "bin", "wtdc.mjs");
+const child = spawn(process.execPath, [bin, "provision", checkout, workspace, label], {
+  stdio: ["ignore", "pipe", "pipe"],
+  // WTDC_HANDOFF tells the provisioner that a setup screen is on screen and will turn
+  // itself into the container terminal, so it must not also open a container tab.
+  env: { ...process.env, WTDC_PROGRESS: "1", WTDC_HANDOFF: "1" },
+});
 
 /** Fold one chunk of child output into the log tail. Both streams, not just
  *  stderr: wtdc prints some early-exit messages ("disabled inside a dev
  *  container", "no worktree path was supplied") to stdout. */
 function consume(stream) {
-  let partial = '';
-  stream.on('data', (chunk) => {
+  let partial = "";
+  stream.on("data", (chunk) => {
     partial += chunk.toString();
-    const rows = partial.split('\n');
-    partial = rows.pop() || '';
+    const rows = partial.split("\n");
+    partial = rows.pop() || "";
     for (const row of rows) {
-      const line = row.replace(/\r$/, '');
+      const line = row.replace(/\r$/, "");
       if (!line) continue;
       if (isProgressLine(line)) {
         const p = parseProgressLine(line);
         if (!p) continue;
-        if (p.phase === 'done') {
+        if (p.phase === "done") {
           state.done = true;
           state.percent = 100;
-          state.phase = 'finish';
+          state.phase = "finish";
         } else {
           state.phase = p.phase;
           state.percent = Math.max(state.percent, p.percent);
@@ -192,7 +203,10 @@ function consume(stream) {
       } else {
         // Strip the plugin's own leading indentation and colour so the tail
         // reads as one column.
-        const clean = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/^\s+/, '').trim();
+        const clean = line
+          .replace(/\x1b\[[0-9;]*m/g, "")
+          .replace(/^\s+/, "")
+          .trim();
         if (clean) state.log.push(clean);
       }
     }
@@ -220,13 +234,13 @@ function leave(code) {
   if (workspace && selfPane && isLastPane(workspace, selfPane)) {
     openHostTab(workspace, checkout);
   }
-  process.stdout.write('\x1b[?25h');
+  process.stdout.write("\x1b[?25h");
   process.exit(code);
 }
 
 /** True when this pane is going to become the container terminal. */
 function takesOverTerminal() {
-  return config.WTDC_OPEN_CONTAINER_PANE !== '0' && !!stateFor(checkout);
+  return config.WTDC_OPEN_CONTAINER_PANE !== "0" && !!stateFor(checkout);
 }
 
 /**
@@ -251,7 +265,9 @@ function handOver() {
   if (!entry) {
     // Say so where the user is looking: this screen is about to be replaced by
     // whatever was underneath it, and a bare exit would take the message with it.
-    state.log.push('the build reported success but recorded no container, so this pane was left alone');
+    state.log.push(
+      "the build reported success but recorded no container, so this pane was left alone",
+    );
     render();
     return false;
   }
@@ -259,10 +275,10 @@ function handOver() {
   // Only ever the pane the hook identified, and never this one.
   if (hostPane && hostPane !== selfPane) closePane(hostPane);
 
-  process.stdout.write('\x1b[?25h');
+  process.stdout.write("\x1b[?25h");
   const status = enterContainerShell(entry, checkout, {
     label,
-    note: 'Connected with docker exec. Exit to close this terminal.',
+    note: "Connected with docker exec. Exit to close this terminal.",
   });
   // No guard on the way out: the shell this pane just ran has ended, exactly as it does
   // for any terminal, and a workspace whose last pane closed is the user's business.
@@ -271,7 +287,7 @@ function handOver() {
 
 const finish = (code) => {
   clearInterval(tick);
-  state.phase = 'finish';
+  state.phase = "finish";
   state.done = code === 0;
   state.failed = code !== 0 && !state.cancelled;
   // A failed build is not 100% done. Jumping the bar to full and ticking every
@@ -301,14 +317,14 @@ const finish = (code) => {
   }, 600);
 };
 
-child.on('error', (err) => {
+child.on("error", (err) => {
   state.failed = true;
   state.log.push(String(err.message || err));
   render();
   leave(1);
 });
 
-child.on('close', finish);
+child.on("close", finish);
 
 // Repaint on a timer so the elapsed counter and the indeterminate bar move even
 // while the child is silent, which is most of a long build.
@@ -317,17 +333,21 @@ const tick = setInterval(render, 250);
 // ------------------------------------------------------------------- input
 
 const onKey = (chunk) => {
-  const ch = chunk.toString('latin1');
+  const ch = chunk.toString("latin1");
 
   if (state.done || state.failed || state.cancelled) {
     cleanup();
     leave(0);
   }
 
-  if (ch === '\x1b' || ch === '\x03' || ch === 'q') {
+  if (ch === "\x1b" || ch === "\x03" || ch === "q") {
     state.cancelled = true;
     cleanup();
-    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
     // Give the child a moment to unwind, then leave regardless.
     setTimeout(() => leave(0), 300);
   }
@@ -336,14 +356,14 @@ const onKey = (chunk) => {
 function cleanup() {
   process.stdin.setRawMode(false);
   process.stdin.pause();
-  process.stdin.off('data', onKey);
+  process.stdin.off("data", onKey);
 }
 
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true);
   process.stdin.resume();
-  process.stdin.on('data', onKey);
-  process.stdout.write('\x1b[?25l');
+  process.stdin.on("data", onKey);
+  process.stdout.write("\x1b[?25l");
 }
 
 render();
