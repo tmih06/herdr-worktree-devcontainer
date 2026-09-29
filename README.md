@@ -129,8 +129,8 @@ progress bar through each stage. It holds the keyboard until the container is
 ready, and `Esc` cancels. The plugin notifies you with a sound when it finishes,
 and a different one if it fails.
 When the image is missing locally, the screen shows Docker's layer download and
-extraction updates during the pull. The overall bar animates during that step
-because Docker does not provide one total for the whole setup.
+extraction updates during the pull. The setup bar advances through its pull
+portion as those layers progress and never empties between updates.
 
 **When the build succeeds, that pane becomes the container terminal.** The
 worktree's first pane was spawned before the container existed, so it is a host

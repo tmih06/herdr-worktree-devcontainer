@@ -23,6 +23,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  barCells,
+  DockerPullProgress,
   PHASES,
   isProgressLine,
   outputRows,
@@ -71,6 +73,7 @@ const state = {
   done: false,
   startedAt: Date.now(),
   log: [],
+  pullProgress: new DockerPullProgress(),
 };
 
 const byKey = Object.fromEntries(PHASES.map((p) => [p.key, p]));
@@ -82,13 +85,9 @@ function elapsed() {
 const BAR_WIDTH = 34;
 const LOG_LINES = 6;
 
-function bar(percent, indeterminate) {
-  // Pull and startup animate rather than inventing an overall percentage.
-  const filled = indeterminate
-    ? Math.floor((Date.now() / 120) % (BAR_WIDTH + 8))
-    : Math.round((percent / 100) * BAR_WIDTH);
-  const head = Math.min(filled, BAR_WIDTH);
-  return `${C.cyan}${"█".repeat(head)}${C.dim}${"░".repeat(Math.max(0, BAR_WIDTH - head))}${C.reset}`;
+function bar(percent) {
+  const filled = barCells(percent, BAR_WIDTH);
+  return `${C.cyan}${"█".repeat(filled)}${C.dim}${"░".repeat(BAR_WIDTH - filled)}${C.reset}`;
 }
 
 function render() {
@@ -101,12 +100,10 @@ function render() {
   lines.push("");
 
   lines.push(
-    `  ${bar(state.percent, current.indeterminate)}  ${Math.round(state.percent)}%  ${C.dim}[${elapsed()}s]${C.reset}`,
+    `  ${bar(state.percent)}  ${Math.round(state.percent)}%  ${C.dim}[${elapsed()}s]${C.reset}`,
   );
   lines.push("");
-  lines.push(
-    `  ${C.blue}›${C.reset} ${current.label}${current.indeterminate ? `${C.dim} (working)${C.reset}` : ""}`,
-  );
+  lines.push(`  ${C.blue}›${C.reset} ${current.label}`);
   lines.push("");
 
   // Phase checklist, so a long build shows that it is moving through stages
@@ -190,6 +187,7 @@ function consume(stream) {
         } else {
           state.phase = p.phase;
           state.percent = Math.max(state.percent, p.percent);
+          if (p.phase === "pull") state.pullProgress = new DockerPullProgress();
         }
       } else {
         // Strip the plugin's own leading indentation and colour so the tail
@@ -199,6 +197,14 @@ function consume(stream) {
           .replace(/^\s+/, "")
           .trim();
         if (clean) {
+          if (state.phase === "pull") {
+            const fraction = state.pullProgress.update(clean);
+            if (fraction !== null) {
+              const pull = byKey.pull;
+              const percent = (phaseStart("pull") + pull.share * fraction) * 100;
+              state.percent = Math.max(state.percent, percent);
+            }
+          }
           state.log.push(clean);
           if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
         }
@@ -328,8 +334,7 @@ child.on("error", (err) => {
 
 child.on("close", finish);
 
-// Repaint on a timer so the elapsed counter and the indeterminate bar move even
-// while the child is silent, which is most of a long build.
+// Repaint on a timer so elapsed time keeps moving while the child is silent.
 const tick = setInterval(render, 250);
 
 // ------------------------------------------------------------------- input
