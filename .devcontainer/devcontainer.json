@@ -35,7 +35,8 @@
   // a binary needing a library the image lacks would be in the container and refuse to run.
   // Add a line here per tool — there is nothing else to configure.
   "mounts": [
-    "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly"
+    // "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly"
+    // "type=bind,source=/home/tmih06/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly"
   ],
 
   // Nothing else is needed, and nothing is added by the plugin beyond the readiness
