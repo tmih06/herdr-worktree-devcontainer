@@ -455,6 +455,67 @@ test('planProvision: an untouched field leaves the config\'s own image alone', a
   assert.equal(plan.imageSource, 'devcontainer.json');
 });
 
+test('a provision is refused when the image on this machine cannot run here', async () => {
+  // A multi-arch tag can still resolve, locally, to a variant this host cannot execute —
+  // an explicit `pull --platform`, a build run for another arch, or a copied cache. The
+  // uid-remap build the CLI does puts `FROM` on that image, the shell inside it will not
+  // exec, and the failure reaches the user as `exec format error` under twenty lines of
+  // minified stack trace. Refusing up front, with the fix, is the difference between a
+  // diagnosable failure and a puzzle.
+  //
+  // Driven through the real `docker image inspect` against an image built for the other
+  // architecture, because the whole claim is about what docker reports.
+  const docker = (() => {
+    try {
+      return execFileSync('docker', ['version', '--format', '{{.Server.Arch}}'],
+        { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
+    } catch {
+      return '';
+    }
+  })();
+  if (!docker) return;                           // no docker here; nothing to prove
+  const host = docker;
+  const other = host === 'arm64' ? 'amd64' : 'arm64';
+
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "wtdc-arch-probe:wrong" }');
+
+  // FROM the other architecture with nothing to execute, so this needs no emulation — the
+  // only way to get such an image onto a machine that could not run one.
+  const ctx = tmp();
+  fs.writeFileSync(path.join(ctx, 'Dockerfile'),
+    `FROM --platform=linux/${other} scratch\nLABEL probe=1\n`);
+  const built = (() => {
+    try {
+      execFileSync('docker', ['build', '--platform', `linux/${other}`, '-t', 'wtdc-arch-probe:wrong', ctx],
+        { stdio: ['ignore', 'ignore', 'pipe'] });
+      return null;
+    } catch (err) {
+      return String(err.stderr || err.message);
+    }
+  })();
+  if (built !== null) return;                    // cannot make the image here; nothing to prove
+
+  try {
+    const { platformMismatch, localPlatform, hostPlatform, describeImage } =
+      await import('../lib/wtdc/imageInfo.mjs');
+
+    assert.equal(hostPlatform(), `linux/${host}`);
+    assert.equal(localPlatform('wtdc-arch-probe:wrong'), `linux/${other}`);
+    assert.equal(platformMismatch('wtdc-arch-probe:wrong'), true, 'the wrong one is caught');
+    assert.equal(platformMismatch('wtdc-arch-probe:not-built'), false, 'an absent image is not a mismatch');
+    assert.equal(platformMismatch(''), false);
+
+    const described = describeImage('wtdc-arch-probe:wrong');
+    assert.equal(described.wrongPlatform, true, 'and the prompt is told, before anyone answers');
+    assert.equal(described.localPlatform, `linux/${other}`);
+    assert.equal(described.hostPlatform, `linux/${host}`);
+  } finally {
+    execFileSync('docker', ['image', 'rm', '-f', 'wtdc-arch-probe:wrong'], { stdio: 'ignore' });
+  }
+});
+
 test('planProvision: the hostname it will set is the one it reports', async () => {
   const dir = tmp();
   const src = path.join(dir, 'devcontainer.json');

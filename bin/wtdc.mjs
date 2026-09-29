@@ -25,6 +25,7 @@ import { emit, phaseStart } from './../lib/wtdc/progress.mjs';
 import * as state from './../lib/wtdc/state.mjs';
 import * as dc from './../lib/wtdc/devcontainer.mjs';
 import * as herdr from './../lib/wtdc/herdr.mjs';
+import * as imageInfo from './../lib/wtdc/imageInfo.mjs';
 
 const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
@@ -130,6 +131,35 @@ function provision(checkout, workspaceId = '', labelArg = '') {
 
   const prebuilt = dc.prebuiltImage(config);
   if (prebuilt) detail(`image     ${prebuilt}`);
+
+  // A tag can be multi-arch and still resolve, on this machine, to a variant this machine
+  // cannot execute — an explicit `pull --platform`, a build run for another arch, or a
+  // copied cache. The Dev Container CLI's uid-remap build does `FROM` on that image, the
+  // shell inside it will not exec, and the failure surfaces as `exec format error` buried
+  // in twenty lines of minified stack trace. Say it here, where the cause is still the
+  // whole story, and give the command that fixes it.
+  //
+  // Before anything is written, so a refusal leaves no merged config and no state entry
+  // behind: there was no build, so there is nothing to clean up.
+  //
+  // Best-effort by design. A config this cannot plan is `buildMerged`'s to report, a few
+  // lines below and with a far better message than anything this could invent — so a
+  // failure here is not a failure, it is nothing to check.
+  try {
+    const planned = dc.planProvision(src, config, checkout);
+    if (imageInfo.platformMismatch(planned.image)) {
+      die(`${planned.image} is on this machine as ${imageInfo.localPlatform(planned.image)}, `
+        + `but this host is ${imageInfo.hostPlatform()}.
+
+   Nothing here can execute it, and provisioning fails a long way from the
+   cause — the devcontainer CLI builds a uid-remapped copy with FROM on that
+   image, and the shell inside the copy does not run. One command fixes it:
+
+     docker pull --platform ${imageInfo.hostPlatform()} ${planned.image}`);
+    }
+  } catch {
+    // Nothing to check. `die` above cannot land here — it exits rather than throws.
+  }
 
   emit('merge', phaseStart('merge') * 100, path.basename(merged));
   try {

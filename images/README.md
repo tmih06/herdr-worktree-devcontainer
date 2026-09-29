@@ -21,11 +21,23 @@ multi-arch tag, so Docker picks the right one for the host.
 
 This matters more than it looks. The Dev Container CLI does not run your image
 directly: when the container user's uid differs from the host's, it builds a
-`vsc-…-uid` copy of the image first. That build passes `--platform` explicitly,
-so on a host with no matching variant it fails outright — and you get a
-`docker build --platform linux/amd64` error rather than a clear "wrong
-architecture". An amd64-only tag on an Apple Silicon or ARM server does not fall
-back to building from your config; it just breaks.
+`vsc-…-uid` copy of the image first, and that build does `FROM` on the image and
+runs a shell inside the copy. A copy this machine cannot execute fails there —
+so an amd64-only tag on an Apple Silicon or ARM server does not fall back to
+building from your config, it just breaks, and it breaks with `exec format
+error` under twenty lines of minified stack trace.
+
+Multi-arch publishes fix the common case. The other one is worth knowing about,
+because it looks identical and is not the registry's fault: **a multi-arch tag
+can still be on your machine as the wrong architecture.** A `pull --platform`,
+a build run for another architecture, or a cache copied from another host all
+leave the tag resolving locally to a variant that cannot run here. The plugin
+checks the image it is about to use, says so before it starts, and gives you the
+one command that fixes it:
+
+```sh
+docker pull --platform linux/arm64 ghcr.io/tmih06/herdr-devcontainer-node:latest
+```
 
 Linux only: a devcontainer is a Linux container, so there is no macOS or
 Windows image to publish. `arm/v7` is left out deliberately — Herdr publishes

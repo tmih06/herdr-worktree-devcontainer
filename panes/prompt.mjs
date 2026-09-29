@@ -132,6 +132,14 @@ replan();
 
 function imageLines() {
   if (!image) return [`${C.dim}checking…${C.reset}`];
+  // An image on this machine that this machine cannot run is not a smaller problem than a
+  // pull, it is a build that will fail, and the failure arrives as a minified stack trace
+  // minutes later. It is worth the one line it takes to say so while there is still a
+  // choice to make.
+  if (image.wrongPlatform) {
+    return [`${C.yellow}on this machine as ${image.localPlatform}, which this `
+      + `host (${image.hostPlatform}) cannot run${C.reset}`];
+  }
   const size = image.size ? `${C.dim}${image.size}${C.reset}` : '';
   switch (image.state) {
     case 'up-to-date':
