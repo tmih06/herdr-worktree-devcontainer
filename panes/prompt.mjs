@@ -187,9 +187,18 @@ function render(toggle) {
     }
     row('Features', ...features);
 
+    // What answering yes costs. The uid copy counts: it is a build the user did not ask
+    // for, it happens on every provision whose image user is not their own uid, and a line
+    // that says "a docker run" and then spends half a minute building an image is not a
+    // description of anything.
     const bits = [];
     if (plan.buildsImage) bits.push(`${C.yellow}builds an image for this worktree (~25s+)${C.reset}`);
-    else bits.push(`${C.green}no image build${C.reset} — a docker run`);
+    else bits.push(`${C.green}no image build from features${C.reset} — a docker run`);
+    if (plan.uidRemap === 'differs') {
+      bits.push(`${C.yellow}and a uid-matched copy of the image${C.reset} ${C.dim}(~300 MB, tens of seconds)${C.reset}`);
+    } else if (plan.uidRemap === 'unknown') {
+      bits.push(`${C.dim}and a uid-matched copy if the image's user is not your uid${C.reset}`);
+    }
     if (plan.remoteUser) bits.push(`${C.dim}user ${plan.remoteUser}${C.reset}`);
     if (plan.hostname) bits.push(`${C.dim}hostname ${plan.hostname}${C.reset}`);
     row('Setup', ...bits);

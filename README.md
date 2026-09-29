@@ -70,7 +70,8 @@ that is not knowable from the config file alone:
   Image     ghcr.io/tmih06/herdr-devcontainer-node:latest
             not on this machine — will be pulled  138 MB
   Features  none
-  Setup     no image build — a docker run
+  Setup     no image build from features — a docker run
+            and a uid-matched copy of the image (~300 MB, tens of seconds)
             user dev
             hostname feature-login-form
 ```
@@ -83,7 +84,14 @@ line says so rather than implying the image is current.
 
 That description comes from the same function provisioning uses, so it cannot
 drift from what actually runs. `Features` names what a template would drop, and
-`Setup` distinguishes a `docker run` from a per-worktree image build.
+`Setup` says what the build will actually cost — including the part that is easy
+to forget. The Dev Container CLI does not run your image: when the container
+user's uid differs from the host's, it builds a `vsc-…-uid` copy of the image
+first, and on a host with a different uid that is *every* provision, including
+ones that declare no features and look exactly like a `docker run`. Saying "no
+image build" and then spending half a minute building an image is not a
+description of anything, so the line accounts for it. Where the image does not
+say which uid its user has, the line says so rather than guessing.
 
 **The image is editable, and the question is still answerable with one key.** The
 field starts holding whatever `devcontainer.json` says, and `↑`/`↓` move between
