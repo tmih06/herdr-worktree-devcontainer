@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { stripComments, stripTrailingCommas, parseJsonc } from '../lib/wtdc/jsonc.mjs';
 import { parseEnvFile } from '../lib/wtdc/config.mjs';
@@ -209,4 +210,107 @@ test('buildMerged: the checkout is never written to', () => {
   fs.writeFileSync(src, original);
   buildMerged(src, path.join(dir, 'out.json'), {});
   assert.equal(fs.readFileSync(src, 'utf8'), original);
+});
+
+// ------------------------------------------------------------- plugin manifest
+
+test('the title boot-launch waits for is the one the manifest declares', async () => {
+  // bootLaunch recognises the prompt overlay by its pane title, and herdr-plugin.toml is
+  // where that title actually comes from. Renaming one without the other means the
+  // launcher waits out its full timeout on every worktree, which is slow and silent.
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const { PROMPT_PANE_TITLE } = await import('../lib/wtdc/herdr.mjs');
+  const manifest = fs.readFileSync(path.join(ROOT, 'herdr-plugin.toml'), 'utf8');
+  const block = manifest.split('[[panes]]').find((b) => b.includes('id = "prompt"'));
+  assert.ok(block, 'the prompt entrypoint must be declared');
+  assert.ok(block.includes(`title = "${PROMPT_PANE_TITLE}"`),
+    `the manifest and PROMPT_PANE_TITLE disagree about the prompt's title`);
+});
+
+// ----------------------------------------------------------------- config.toml
+
+// `terminal.default_shell` is the whole integration between this plugin and Herdr's pane
+// spawning, and the install action edits a file the user owns. So the editor has to leave
+// every other setting, comment and quoting style exactly as it found them.
+
+const SHELL = '/plugin/lib/wtdc/shell.mjs';
+
+test('setTomlKey: adds the table when the file has none', async () => {
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const edit = setTomlKey('onboarding = false\n[server]\nport = 1\n', 'terminal', 'default_shell', SHELL);
+
+  assert.equal(edit.ok, true);
+  assert.equal(edit.previous, null);
+  assert.equal(edit.changed, true);
+  assert.match(edit.text, /onboarding = false/);
+  assert.match(edit.text, /\[server\]\nport = 1/);
+  assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL);
+});
+
+test('setTomlKey: adds the key to a table that is already there, keeping its other keys', async () => {
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const edit = setTomlKey('[terminal]\nshell_mode = "auto"\n\n[server]\nport = 1\n', 'terminal', 'default_shell', SHELL);
+
+  assert.equal(edit.changed, true);
+  assert.match(edit.text, /shell_mode = "auto"/, 'an unrelated key in the same table must survive');
+  assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL);
+  assert.equal(getTomlKey(edit.text, 'server', 'port'), '1');
+});
+
+test('setTomlKey: replaces the value in place and keeps the comment', async () => {
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const edit = setTomlKey('[terminal]\ndefault_shell = "/usr/bin/fish"  # my shell\n', 'terminal', 'default_shell', SHELL);
+
+  assert.equal(edit.previous, '/usr/bin/fish', 'what was there before has to be reportable');
+  assert.equal(edit.text, `[terminal]\ndefault_shell = "${SHELL}"  # my shell\n`);
+  assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL);
+});
+
+test('setTomlKey: a # inside the value is a value, not a comment', async () => {
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const edit = setTomlKey('[terminal]\ndefault_shell = "/bin/sh # not a comment"\n', 'terminal', 'default_shell', SHELL);
+  assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL);
+});
+
+test('setTomlKey: a dotted key is the same key, rewritten where it is', async () => {
+  // `terminal.default_shell = "…"` at the top level would collide with a [terminal]
+  // table added alongside it, so it has to be replaced in place instead.
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const edit = setTomlKey('terminal.default_shell = "/bin/bash"\n', 'terminal', 'default_shell', SHELL);
+  assert.equal(edit.text, `terminal.default_shell = "${SHELL}"\n`);
+  assert.doesNotMatch(edit.text, /\[terminal\]/, 'a second way of saying the same key is not added');
+  assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL);
+});
+
+test('setTomlKey: single-quoted and indented values are still recognised', async () => {
+  const { setTomlKey, getTomlKey } = await import('../lib/wtdc/toml.mjs');
+  for (const text of ["[terminal]\ndefault_shell = '/bin/sh'\n", '[terminal]\n  default_shell = "/bin/zsh"\n']) {
+    const edit = setTomlKey(text, 'terminal', 'default_shell', SHELL);
+    assert.equal(edit.changed, true, text);
+    assert.equal(getTomlKey(edit.text, 'terminal', 'default_shell'), SHELL, text);
+  }
+});
+
+test('setTomlKey: setting it twice changes nothing the second time', async () => {
+  // The install action is meant to be run whenever, so running it twice must not keep
+  // appending or start reporting a change that is not one.
+  const { setTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const once = setTomlKey('onboarding = false\n', 'terminal', 'default_shell', SHELL);
+  const twice = setTomlKey(once.text, 'terminal', 'default_shell', SHELL);
+  assert.equal(twice.changed, false);
+  assert.equal(twice.text, once.text);
+  assert.equal(twice.previous, SHELL);
+});
+
+test('setTomlKey: refuses a config it cannot edit safely, and says why', async () => {
+  // Both of these are ways a hand-edited config.toml can be shaped, and in both a
+  // blind write would produce invalid TOML and take every other setting with it.
+  const { setTomlKey } = await import('../lib/wtdc/toml.mjs');
+  const dup = setTomlKey('[terminal]\nx = 1\n[terminal]\ny = 2\n', 'terminal', 'default_shell', SHELL);
+  assert.equal(dup.ok, false);
+  assert.match(dup.reason, /declared 2 times/);
+
+  const inline = setTomlKey('terminal = { default_shell = "/bin/sh" }\n', 'terminal', 'default_shell', SHELL);
+  assert.equal(inline.ok, false);
+  assert.match(inline.reason, /inline table/);
 });

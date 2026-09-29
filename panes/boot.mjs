@@ -1,11 +1,16 @@
 #!/usr/bin/env node
-// Blocking boot screen shown while a dev container is being provisioned.
+// Blocking setup screen shown while a dev container is being provisioned.
 //
-// Opened zoomed over the new worktree's pane, so it holds the screen and the
+// Opened zoomed over the new worktree's own pane, so it holds that screen and the
 // keyboard until the container is ready. The previous behaviour streamed
 // `devcontainer up` into an ordinary tab, which meant the pane was easy to lose
 // behind other tabs and the user had no way to tell a slow build from a hung
 // one.
+//
+// When the build succeeds this pane *becomes* the container terminal instead of
+// exiting. The worktree's first pane was spawned before the container existed, so
+// it is a host shell; leaving that as the worktree's only terminal is what "the
+// init one still not in dc" is. See handOver().
 //
 // The provisioner runs as a child process. Its stderr carries both ordinary
 // output and tagged progress lines (see lib/wtdc/progress.mjs); this pane
@@ -18,13 +23,22 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PHASES, isProgressLine, parseProgressLine } from '../lib/wtdc/progress.mjs';
+import { loadConfig } from '../lib/wtdc/config.mjs';
+import { get as stateFor } from '../lib/wtdc/state.mjs';
+import { enterContainerShell } from '../lib/wtdc/containerShell.mjs';
+import { closePane, isLastPane, openHostTab } from '../lib/wtdc/herdr.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, '..');
 
+const config = loadConfig();
 const checkout = process.env.WTDC_CHECKOUT || '';
 const label = process.env.WTDC_LABEL || path.basename(checkout);
-const workspace = process.env.WTDC_WORKSPACE || '';
+const workspace = process.env.WTDC_WORKSPACE || process.env.HERDR_WORKSPACE_ID || '';
+// The worktree's own shell pane, captured by the hook before this plugin put anything
+// on screen. Nothing else may be closed on the strength of it.
+const hostPane = process.env.WTDC_TARGET_PANE || '';
+const selfPane = process.env.HERDR_PANE_ID || '';
 
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m',
@@ -118,8 +132,12 @@ function render() {
   } else if (state.cancelled) {
     lines.push(`  ${C.yellow}Cancelled.${C.reset} No container was created.`);
   } else if (state.done) {
-    lines.push(`  ${C.green}Ready.${C.reset} Every terminal you open in this worktree now runs`);
-    lines.push(`  inside the container.`);
+    if (takesOverTerminal()) {
+      lines.push(`  ${C.green}Ready.${C.reset} This terminal becomes the container in a moment.`);
+    } else {
+      lines.push(`  ${C.green}Ready.${C.reset} Every terminal you open in this worktree now runs`);
+      lines.push(`  inside the container.`);
+    }
   }
 
   lines.push('');
@@ -141,7 +159,12 @@ const bin = path.join(pluginRoot, 'bin', 'wtdc.mjs');
 const child = spawn(
   process.execPath,
   [bin, 'provision', checkout, workspace, label],
-  { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WTDC_PROGRESS: '1' } },
+  {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // WTDC_HANDOFF tells the provisioner that a setup screen is on screen and will turn
+    // itself into the container terminal, so it must not also open a container tab.
+    env: { ...process.env, WTDC_PROGRESS: '1', WTDC_HANDOFF: '1' },
+  },
 );
 
 /** Fold one chunk of child output into the log tail. Both streams, not just
@@ -181,6 +204,72 @@ function consume(stream) {
 consume(child.stdout);
 consume(child.stderr);
 
+// ------------------------------------------------------------------ leaving
+
+/**
+ * Leave without taking the worktree's workspace with us.
+ *
+ * Herdr removes a workspace the moment its last pane closes, and a worktree whose
+ * workspace is gone is a worktree the user cannot get back to from the sidebar — the
+ * checkout is still on disk, which is the confusing part. This pane is the last one
+ * whenever the worktree's shell is already gone: Herdr 0.9.0 is documented to give a
+ * zoomed pane its target's place, the user can close the shell while the question is up,
+ * or a host pane may never have existed. So check before every exit and leave a
+ * replacement behind if there is nothing else.
+ */
+function leave(code) {
+  if (workspace && selfPane && isLastPane(workspace, selfPane)) {
+    openHostTab(workspace, checkout);
+  }
+  process.stdout.write('\x1b[?25h');
+  process.exit(code);
+}
+
+/** True when this pane is going to become the container terminal. */
+function takesOverTerminal() {
+  return config.WTDC_OPEN_CONTAINER_PANE !== '0' && !!stateFor(checkout);
+}
+
+/**
+ * Become the container terminal.
+ *
+ * Two things happen, in this order and both deliberately:
+ *
+ *  1. The worktree's original shell pane is closed. It was spawned before the container
+ *     existed, so it is a host shell, and the plugin's whole promise is that terminals in
+ *     this worktree run in the container. Leaving it behind is the reported "the init one
+ *     still not in dc". It is closed *after* this pane has something to replace it with,
+ *     never before, so the workspace is never briefly empty.
+ *
+ *  2. This pane execs into the container, through the same planExec the dispatcher uses
+ *     for every other pane. Handing the pane over rather than opening a second one and
+ *     exiting is what makes the ordering above impossible to get wrong: there is no gap
+ *     between "the setup screen goes" and "the container terminal exists", which is the
+ *     gap in which a workspace disappears.
+ */
+function handOver() {
+  const entry = stateFor(checkout);
+  if (!entry) {
+    // Say so where the user is looking: this screen is about to be replaced by
+    // whatever was underneath it, and a bare exit would take the message with it.
+    state.log.push('the build reported success but recorded no container, so this pane was left alone');
+    render();
+    return false;
+  }
+
+  // Only ever the pane the hook identified, and never this one.
+  if (hostPane && hostPane !== selfPane) closePane(hostPane);
+
+  process.stdout.write('\x1b[?25h');
+  const status = enterContainerShell(entry, checkout, {
+    label,
+    note: 'Connected with docker exec. Exit to close this terminal.',
+  });
+  // No guard on the way out: the shell this pane just ran has ended, exactly as it does
+  // for any terminal, and a workspace whose last pane closed is the user's business.
+  process.exit(status);
+}
+
 const finish = (code) => {
   clearInterval(tick);
   state.phase = 'finish';
@@ -197,23 +286,27 @@ const finish = (code) => {
     // empty pane and took the only copy of the error with it. onKey closes it.
     // Without a terminal there is nobody to press a key, so leave anyway
     // rather than hold a pane open forever.
-    if (!process.stdin.isTTY) setTimeout(() => process.exit(code || 1), 3000);
+    if (!process.stdin.isTTY) setTimeout(() => leave(code || 1), 3000);
     return;
   }
 
-  // Success closes on its own: provision has just opened and focused the
-  // container tab, so standing here would only cover the thing it made.
+  // Long enough to read the last frame, then hand the pane to the container. A
+  // handover that cannot happen — the user asked for no container terminal, or
+  // the state is missing — falls back to closing, which leaves the worktree's
+  // own pane standing.
   setTimeout(() => {
-    process.stdout.write('\x1b[?25h');
-    process.exit(0);
-  }, 400);
+    // handOver() only comes back when it could not be done; otherwise this pane
+    // is a container terminal and does not return at all.
+    if (takesOverTerminal()) handOver();
+    leave(0);
+  }, 600);
 };
 
 child.on('error', (err) => {
   state.failed = true;
   state.log.push(String(err.message || err));
   render();
-  process.exit(1);
+  leave(1);
 });
 
 child.on('close', finish);
@@ -229,17 +322,15 @@ const onKey = (chunk) => {
 
   if (state.done || state.failed || state.cancelled) {
     cleanup();
-    process.stdout.write('\x1b[?25h');
-    process.exit(0);
+    leave(0);
   }
 
   if (ch === '\x1b' || ch === '\x03' || ch === 'q') {
     state.cancelled = true;
     cleanup();
-    process.stdout.write('\x1b[?25h');
     try { child.kill('SIGTERM'); } catch { /* already gone */ }
     // Give the child a moment to unwind, then leave regardless.
-    setTimeout(() => process.exit(0), 300);
+    setTimeout(() => leave(0), 300);
   }
 };
 

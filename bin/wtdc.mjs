@@ -20,6 +20,7 @@ import { ROOT, insideContainer } from './../lib/wtdc/context.mjs';
 import { loadConfig, seedUserConfig } from './../lib/wtdc/config.mjs';
 import { tryRun, have } from './../lib/wtdc/run.mjs';
 import { step, ok, info, detail, warn, die, notify } from './../lib/wtdc/ui.mjs';
+import { setTomlKey } from './../lib/wtdc/toml.mjs';
 import { emit, phaseStart } from './../lib/wtdc/progress.mjs';
 import * as state from './../lib/wtdc/state.mjs';
 import * as dc from './../lib/wtdc/devcontainer.mjs';
@@ -90,6 +91,9 @@ function provisionFailed() {
 function provision(checkout, workspaceId = '', labelArg = '') {
   const config = loadConfig();
   const label = labelArg || path.basename(checkout);
+  // Set by panes/boot.mjs, which is showing the progress and will hand its own pane to
+  // the container shell when this returns.
+  const handedOver = process.env.WTDC_HANDOFF === '1';
 
   process.env.WTDC_PROVISION_LABEL = label;
   process.env.WTDC_PROVISION_CHECKOUT = checkout;
@@ -177,7 +181,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   detail(`container: ${cname} (${up.containerId.slice(0, 12)})`);
   detail(`container cwd: ${up.containerWorkspace || '<default>'}`);
 
-  if (config.WTDC_OPEN_CONTAINER_PANE === '1') {
+  if (config.WTDC_OPEN_CONTAINER_PANE === '1' && !handedOver) {
     herdr.openPluginPane('container', {
       placement: 'tab',
       workspace: workspaceId || undefined,
@@ -187,10 +191,16 @@ function provision(checkout, workspaceId = '', labelArg = '') {
         WTDC_CONTAINER_WORKSPACE: up.containerWorkspace,
         WTDC_CONTAINER_USER: remoteUser,
         WTDC_LABEL: label,
+        WTDC_CHECKOUT: checkout,
       },
       focus: true,
     });
     ok('opened the container terminal in this worktree');
+  } else if (handedOver) {
+    // A setup screen is on screen (panes/boot.mjs runs this process) and turns its own
+    // pane into the container terminal when the build finishes. Opening a tab as well
+    // would leave two terminals in the worktree and no way to tell which is real.
+    detail('the setup screen is turning itself into the container terminal');
   } else {
     detail('container tab opening is disabled by WTDC_OPEN_CONTAINER_PANE=0');
   }
@@ -313,26 +323,84 @@ function startup() {
 
 // ------------------------------------------------------------------- actions
 
-function actionInstallShell() {
+/**
+ * Point Herdr's `terminal.default_shell` at the dispatcher.
+ *
+ * This one line is the whole integration between the plugin and Herdr's pane
+ * spawning: without it every new pane runs the user's own shell, so a worktree
+ * that has a running container still gives you a host terminal. Printing the line
+ * and trusting the user to paste it is how that stays broken — a terminal opened
+ * later looks exactly like a terminal opened before the container existed, and
+ * nothing anywhere reports the difference. So the action edits the file, keeps a
+ * backup, and says what it did. `WTDC_CONFIG_FILE` points it elsewhere for tests
+ * and for anyone whose Herdr keeps its config somewhere unusual.
+ */
+function installShell() {
   const shellPath = path.join(ROOT, 'lib', 'wtdc', 'shell.mjs');
+  const file = process.env.WTDC_CONFIG_FILE
+    || path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || '', '.config'),
+      'herdr', 'config.toml');
   const stateFile = process.env.WTDC_STATE_FILE
     || path.join(process.env.XDG_STATE_HOME || path.join(process.env.HOME || '', '.local', 'state'),
       'herdr', 'plugins', 'worktree-devcontainer', 'state.json');
 
-  // This output is the deliverable, so it goes to stdout where a user or a
-  // script piping the action actually sees it.
+  let original = '';
+  try {
+    original = fs.readFileSync(file, 'utf8');
+  } catch { /* no config yet, or unreadable: fall through and create it */ }
+
+  const edit = setTomlKey(original, 'terminal', 'default_shell', shellPath);
+  if (!edit.ok) {
+    process.stdout.write(`error: ${file} — ${edit.reason},\n`
+      + 'so this plugin will not touch it. Set the key by hand:\n\n'
+      + `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`);
+    return 1;
+  }
+
+  if (!edit.changed) {
+    process.stdout.write(`already installed: terminal.default_shell is ${shellPath}\n`);
+  } else {
+    if (original !== '') {
+      const backup = `${file}.bak-before-wtdc`;
+      try {
+        fs.writeFileSync(backup, original);
+      } catch { /* a read-only config dir is reported by the write below */ }
+      process.stdout.write(`backed up ${file} to ${backup}\n`);
+    }
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, edit.text);
+    } catch (err) {
+      process.stdout.write(`error: could not write ${file}: ${err.message}\n\n`
+        + 'Add this by hand instead:\n\n'
+        + `  [terminal]\n  default_shell = "${shellPath}"\n\nthen run: herdr server reload-config\n`);
+      return 1;
+    }
+    process.stdout.write(`set terminal.default_shell = ${shellPath}\n`);
+  }
+
   process.stdout.write(`
-To make every new terminal in a provisioned worktree open inside its
-container, add this to ~/.config/herdr/config.toml:
+terminal.default_shell is the only thing that decides where a new pane runs.
+With it pointing at the dispatcher, a pane whose working directory is a
+provisioned worktree is \`docker exec\` into that worktree's container, and a pane
+anywhere else is your real $SHELL, unchanged.
 
-  [terminal]
-  default_shell = "${shellPath}"
-
-Then run:  herdr server reload-config
-
-It is a pass-through everywhere else: a pane in any other directory execs
-your real $SHELL unchanged. The dispatcher reads ${stateFile}
+It reads ${stateFile}
 `);
+
+  // Reload here rather than printing a line and hoping: the failure this prevents is
+  // silent, so the step people forget is the one that has to be automatic.
+  if (herdr.reloadConfig()) {
+    process.stdout.write('\nreloaded the server config, so new panes already use it\n');
+  } else {
+    process.stdout.write('\nnow run:  herdr server reload-config\n');
+  }
+  return 0;
+}
+
+function actionInstallShell() {
+  const rc = installShell();
+  if (rc !== 0) process.exitCode = rc;
 }
 
 function actionProvision() {
@@ -371,9 +439,20 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const overlayUp = herdr.panesIn(workspaceId).some((p) => p.label === 'Dev container?');
-    if (!overlayUp) break;
+    const panes = herdr.panesIn(workspaceId);
+    if (!panes.some((p) => p.label === herdr.PROMPT_PANE_TITLE)) break;
+    // Also stop waiting once the pane this was going to zoom has gone: there is
+    // nothing left to wait for, and the target is resolved again below anyway.
+    if (targetPane && !panes.some((p) => p.pane_id === targetPane)) break;
     sleepMs(100);
+  }
+
+  // The pane the hook captured is a preference, not a fact. The user can close the
+  // worktree's shell while the question is up, and `--target-pane` rejects an id that
+  // is not there — which would leave them having answered "yes" to nothing at all.
+  const pane = herdr.resolveTargetPane(workspaceId, targetPane);
+  if (!pane) {
+    warn('the worktree has no pane left to show the setup screen in; it will open wherever you are');
   }
 
   herdr.openPluginPane('boot', {
@@ -383,12 +462,12 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
     // The worktree's own pane, captured by the hook before this plugin opened
     // anything. Zooming it is what makes the setup screen take over the
     // worktree instead of appearing in a tab of its own.
-    pane: targetPane || '',
+    pane,
     env: {
       WTDC_CHECKOUT: checkout,
       WTDC_LABEL: label,
       WTDC_WORKSPACE: workspaceId,
-      WTDC_TARGET_PANE: targetPane || '',
+      WTDC_TARGET_PANE: pane,
     },
   });
 }

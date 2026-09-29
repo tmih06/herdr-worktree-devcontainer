@@ -14,6 +14,8 @@ import path from 'node:path';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-shell-'));
 
+const stripAnsi = (text) => String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
 // A stub `docker` on PATH answers `ps -q` with a running container and
 // resolves a passwd home, which is all planExec asks of it. The values are
 // baked in rather than read from shell variables, so nothing here depends on
@@ -116,4 +118,77 @@ test('findByCwd is what keeps unrelated directories out of the container', async
   assert.equal(state.findByCwd('/w/feature'), null);
   assert.equal(state.findByCwd('/home/other/project'), null);
   assert.ok(state.findByCwd('/w/feat/lib'), 'a real subdirectory must match');
+});
+
+// ------------------------------------------------------- the container terminal
+
+test('the container terminal header names the worktree and the container path', async () => {
+  const { containerShellHeader } = await import('../lib/wtdc/containerShell.mjs');
+  const raw = containerShellHeader({
+    label: 'feat', workdir: '/workspaces/feat', note: 'Exit to close this terminal.',
+  });
+
+  // The setup screen draws a full-screen frame first, so a pane that hands over to this
+  // has to clear it or the old frame stays behind the prompt.
+  assert.ok(raw.startsWith('\x1b[2J\x1b[H'), 'a reused pane has to be cleared first');
+  const text = stripAnsi(raw);
+  assert.match(text, /dev container {2}feat/, 'the worktree it belongs to');
+  assert.match(text, /\/workspaces\/feat/, 'the path inside the container, not the host one');
+  assert.match(text, /Exit to close this terminal\./);
+});
+
+test('the container terminal uses the same exec the dispatcher does', async () => {
+  // Two panes reach the container — the one the provision action opens, and the setup
+  // screen that takes its own pane over — and they have to land in the same shell. Both
+  // come through here, on top of planExec, so there is only one set of arguments to keep
+  // right.
+  withStubDocker();
+  const { planContainerShell, enterContainerShell } = await import('../lib/wtdc/containerShell.mjs');
+  const { planExec } = await import('../lib/wtdc/shell.mjs');
+
+  assert.deepEqual(
+    planContainerShell(entry(), '/w/feat').args,
+    planExec(entry(), '/w/feat').args,
+  );
+
+  // And the exit status is the container shell's, so a pane that becomes one behaves
+  // like a pane that was opened as one.
+  let said = '';
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => { said += String(chunk); return true; };
+  let status;
+  try {
+    status = enterContainerShell(entry(), '/w/feat', { label: 'feat' });
+  } finally {
+    process.stdout.write = write;
+  }
+  assert.equal(status, 0);
+  assert.match(stripAnsi(said), /dev container/);
+});
+
+test('the container terminal reports a stopped container instead of hanging', async () => {
+  // It runs in a pane that has to decide what to do next, so a container that is not
+  // there is a message and a status — never a throw, and never a silent success.
+  withStubDocker({ running: false });
+  const { enterContainerShell } = await import('../lib/wtdc/containerShell.mjs');
+
+  let said = '';
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => { said += String(chunk); return true; };
+  let status;
+  try {
+    status = enterContainerShell(entry(), '/w/feat');
+  } finally {
+    process.stdout.write = write;
+  }
+
+  assert.equal(status, 1);
+  assert.match(said, /not running/);
+  assert.doesNotMatch(said, /exec -it/, 'nothing may be execed into a container that is gone');
+});
+
+test('the container terminal refuses an entry with no container at all', async () => {
+  withStubDocker();
+  const { enterContainerShell } = await import('../lib/wtdc/containerShell.mjs');
+  assert.equal(enterContainerShell(entry({ container_id: '' }), '/w/feat'), 1);
 });

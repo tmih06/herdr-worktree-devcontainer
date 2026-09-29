@@ -37,39 +37,48 @@ title = "Dev container: destroy for this worktree"
 contexts = ["workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "teardown"]
 
-# Prints the one config.toml line that points terminal.default_shell at the
-# dispatcher. It does not edit the config itself.
+# Points terminal.default_shell at the dispatcher, keeping a .bak-before-wtdc copy of
+# the config as it was, and reloads the server. Without this key every new pane runs the
+# user's own shell, so a worktree with a running container still gives host terminals —
+# and nothing reports it. Refuses to edit a config.toml it cannot read unambiguously.
 [[actions]]
 id = "install-shell"
 title = "Dev container: install shell dispatcher"
 contexts = ["global", "workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "install-shell"]
 
+# Every pane command below is spelled out through $HERDR_PLUGIN_ROOT rather than left
+# relative, and that is not a style choice. A pane runs with the working directory it was
+# opened with — the worktree's checkout — so a relative `panes/prompt.mjs` resolves
+# inside the *user's* repository, not inside this plugin. It worked here only because
+# this plugin is developed in a worktree of itself, and it silently does nothing at all
+# in every other repository. Herdr does not expand the variable itself, hence the shell.
+
 # The yes/no checkbox shown right after a worktree is created.
 [[panes]]
 id = "prompt"
 title = "Dev container?"
 placement = "overlay"
-command = ["node", "panes/prompt.mjs"]
+command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/panes/prompt.mjs\""]
 
 # Streams `devcontainer up` / teardown output in a normal tab.
 [[panes]]
 id = "build"
 title = "Dev container"
 placement = "tab"
-command = ["node", "panes/build.mjs"]
+command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/panes/build.mjs\""]
 
-# The blocking setup screen: zoomed over the worktree's pane, with a progress
-# bar, and it holds the keyboard until the container is ready or it fails.
+# The setup screen: zoomed over the worktree's pane, with a progress bar. It holds the
+# keyboard until the container is ready, then becomes the container terminal.
 [[panes]]
 id = "boot"
 title = "Setting up dev container"
 placement = "zoomed"
-command = ["node", "panes/boot.mjs"]
+command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/panes/boot.mjs\""]
 
-# The one-shot container terminal opened right after a successful build.
+# The one-shot container terminal the `provision` action opens.
 [[panes]]
 id = "container"
 title = "Dev container shell"
 placement = "tab"
-command = ["node", "panes/container.mjs"]
+command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/panes/container.mjs\""]

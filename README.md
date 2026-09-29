@@ -36,14 +36,22 @@ land in the container:
 herdr plugin action invoke worktree-devcontainer.install-shell
 ```
 
-It prints one line to add to `~/.config/herdr/config.toml`:
+It points `terminal.default_shell` at the dispatcher in `~/.config/herdr/config.toml`,
+keeps a `.bak-before-wtdc` copy of what was there, and reloads the server so it takes
+effect immediately:
 
 ```toml
 [terminal]
 default_shell = "/path/to/this/repo/lib/wtdc/shell.mjs"
 ```
 
-Then `herdr server reload-config`. The plugin never edits your config itself.
+That one line is the whole integration. Herdr spawns it for every new pane, tab and
+terminal, and it decides per pane: a pane whose working directory is a provisioned
+worktree is `docker exec` into that worktree's container, and a pane anywhere else is
+your real `$SHELL`, unchanged. Without it nothing warns you — a terminal opened after a
+container is ready looks exactly like one opened before, because both are the host
+shell. The action is safe to re-run, and refuses to touch a `config.toml` it cannot edit
+without guessing.
 
 ## Use it
 
@@ -54,10 +62,23 @@ worktree's pane, with a progress bar through each stage. It holds the keyboard
 until the container is ready, and `Esc` cancels. The plugin notifies you with a
 sound when it finishes, and a different one if it fails.
 
+**When the build succeeds, that pane becomes the container terminal.** The
+worktree's first pane was spawned before the container existed, so it is a host
+shell; the setup screen hands its own pane to `docker exec` and retires the host
+one, so the worktree is left with a single terminal that is already inside the
+container. The plugin opens no second tab, and there is no window in which the
+workspace has no panes — which matters, because Herdr removes a workspace the
+moment its last pane closes, taking the worktree out of the sidebar while the
+checkout is still on disk.
+
+If the build fails, the screen stays up with the tool's own error, `Esc` or any key
+dismisses it, and the host shell is deliberately left alone so there is somewhere to
+retry from.
+
 Afterwards, **every** terminal, split, tab, and agent you open in that worktree
-runs inside its container. Split panes, layouts, and agent lifecycle all behave
-normally, because they are ordinary Herdr features — only the shell they spawn
-is different.
+runs inside its container — that is what the dispatcher is for. Split panes,
+layouts, and agent lifecycle all behave normally, because they are ordinary Herdr
+features; only the shell they spawn is different.
 
 Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
@@ -68,7 +89,7 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 | `provision` | build a container for the current worktree |
 | `status` | list tracked worktrees and whether their containers run |
 | `teardown` | destroy the current worktree's container |
-| `install-shell` | print the `default_shell` line to add |
+| `install-shell` | point `terminal.default_shell` at the dispatcher, back up the config, reload |
 
 ## How it works
 
@@ -177,12 +198,21 @@ is still cleaned up.
 bin/wtdc.mjs          CLI: hooks, actions, provision, teardown, status
 lib/wtdc/shell.mjs    the dispatcher installed as terminal.default_shell
 lib/wtdc/devcontainer.mjs  config discovery, merge, container lifecycle
+lib/wtdc/containerShell.mjs the container terminal, shared by both routes into one
+lib/wtdc/toml.mjs     the one edit made to config.toml
 lib/wtdc/{state,config,herdr,ui,run,jsonc,context,progress}.mjs
 panes/{prompt,boot,build,container}.mjs
 ```
 
 The plugin is plain ESM JavaScript with no build step, so `herdr plugin link`
 works on a checkout with nothing to compile.
+
+**Pane commands are spelled through `$HERDR_PLUGIN_ROOT`, not left relative.**
+A plugin pane runs with the working directory it was opened with — the worktree's
+checkout — so `["node", "panes/boot.mjs"]` resolves inside the *user's* repository.
+It appears to work while you develop this plugin in a worktree of itself, and does
+nothing at all everywhere else. Herdr does not expand the variable, hence the
+`sh -c "exec node …"` in `herdr-plugin.toml`.
 
 Editing `herdr-plugin.toml` — adding a pane, changing a command — needs
 `herdr server reload-config` before it takes effect. Until then Herdr still
@@ -200,5 +230,14 @@ bash tests/real-e2e.sh         # needs docker, devcontainer, and a live Herdr
 ```
 
 `tests/real-e2e.sh` is the one that proves the design: it provisions a real
-container and then drives the dispatcher through an actual PTY to confirm a new
-terminal lands inside it. It skips with a reason when its tools are missing.
+container, drives the dispatcher through an actual PTY to confirm a new terminal
+lands inside it, and then opens a real setup screen over a real workspace to
+confirm the worktree's workspace is still there afterwards and that its terminal
+is the container. It skips with a reason when its tools are missing.
+
+`WTDC_IMAGE` overrides the image the real test provisions, which is how to run it
+on a host whose architecture the published templates do not cover:
+
+```sh
+WTDC_IMAGE=my-local-arm64-image bash tests/real-e2e.sh
+```

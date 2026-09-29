@@ -119,12 +119,28 @@ if [ "$a1 $a2" = "workspace list" ]; then
   echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"demo"}]}}'
   exit 0
 fi
-# pane list backs the workspace -> pane id lookup that zoomed/split panes need.
+# pane list backs the workspace -> pane id lookup that zoomed/split panes need. A
+# test can replace the topology through WTDC_STUB_PANES, to say "the pane the hook
+# captured is gone by the time the setup screen opens".
 if [ "$a1 $a2" = "pane list" ]; then
+  if [ -n "\${WTDC_STUB_PANES:-}" ]; then echo "$WTDC_STUB_PANES"; exit 0; fi
   echo '{"result":{"panes":[
     {"pane_id":"w9:p1","workspace_id":"w9","focused":true},
     {"pane_id":"w11:p1","workspace_id":"w11","focused":true}]}}'
   exit 0
+fi
+# Herdr refuses to close a pane it does not have, so the stub has to as well: that
+# refusal is what closePane() is written to survive.
+if [ "$a1 $a2" = "pane close" ]; then
+  if [ -n "\${WTDC_STUB_PANES:-}" ]; then
+    case "$WTDC_STUB_PANES" in *"$a3"*) exit 0 ;; esac
+    echo 'pane not found' >&2
+    exit 1
+  fi
+  case "$a3" in
+    w9:p1|w11:p1) exit 0 ;;
+    *) echo 'pane not found' >&2; exit 1 ;;
+  esac
 fi
 exit 0
 `);
@@ -155,6 +171,7 @@ function wtdc(args, extraEnv = {}) {
 }
 
 const state = () => JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'state.json'), 'utf8'));
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-e2e-cfg-'));
 const calls = (tool) => {
   try {
     return fs.readFileSync(path.join(CALLS, tool), 'utf8');
@@ -296,6 +313,60 @@ test('boot-launch waits for the prompt overlay to close before opening', () => {
   assert.doesNotMatch(recorded, /--workspace w9/);
 });
 
+test('a zoomed pane falls back to the workspace\'s own pane when the captured one is gone', () => {
+  // The user can close the worktree's shell while the question is still up. Naming a
+  // pane that is not there is rejected outright, and nothing is opened: the user has
+  // answered "yes" and gets no build. The pane list is the authority, not the id the
+  // hook remembered.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p9'], {
+    WTDC_STUB_PANES: JSON.stringify({ result: { panes: [{ pane_id: 'w9:p7', workspace_id: 'w9', focused: true }] } }),
+  });
+
+  const recorded = calls('herdr');
+  assert.doesNotMatch(recorded, /--target-pane w9:p9/, 'a pane that no longer exists must not be named');
+  assert.match(recorded, /--target-pane w9:p7/, 'the worktree\'s remaining pane is the target');
+  assert.match(recorded, /--env WTDC_TARGET_PANE=w9:p7/, 'and the screen must be told, not the stale id');
+});
+
+test('a zoomed pane with no pane left still goes to the right workspace', () => {
+  // An untargeted pane resolves to the *active* pane, which is wherever the user
+  // happened to be, so the workspace has to be focused first. `--workspace` would be
+  // rejected for a zoomed pane.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p9'], {
+    WTDC_STUB_PANES: JSON.stringify({ result: { panes: [] } }),
+  });
+
+  const recorded = calls('herdr');
+  assert.match(recorded, /pane open .*--entrypoint boot --placement zoomed/);
+  assert.match(recorded, /workspace focus w9/);
+  assert.doesNotMatch(recorded, /--target-pane/, 'there is no pane to name');
+  assert.doesNotMatch(recorded, /--workspace w9/, '--workspace is rejected for a zoomed pane');
+});
+
+test('the setup screen becomes the container terminal, so no container tab is opened', () => {
+  // The worktree's first pane is a host shell — it was spawned before the container
+  // existed. The setup screen takes that terminal over rather than opening a second
+  // one beside it, so provisioning behind it must not open a tab as well: two
+  // terminals, no way to tell which is the container.
+  reset();
+  const res = wtdc(['provision', WT_FRESH, 'w9', 'fresh'], { WTDC_HANDOFF: '1' });
+  assert.equal(res.status, 0, res.stderr);
+
+  assert.doesNotMatch(calls('herdr'), /--entrypoint container/, 'no second container terminal');
+  assert.equal(state().entries[WT_FRESH].container_id, 'deadbeefcafe', 'the build still happened');
+});
+
+test('without a setup screen, provision opens the container terminal as a tab', () => {
+  // The `provision` action runs with nothing on screen to hand over, so it still has
+  // to put a container-backed terminal in front of the user itself.
+  reset();
+  wtdc(['provision', WT, 'w9', 'demo']);
+  assert.match(calls('herdr'), /--entrypoint container --placement tab/);
+  assert.match(calls('herdr'), /--env WTDC_CHECKOUT=/, 'the pane is told which worktree it is for');
+});
+
 test('hook-created offers the prompt only for a worktree with a devcontainer config', () => {
   const event = (checkout, workspace = 'w9', label = 'demo') => JSON.stringify({
     data: {
@@ -400,9 +471,120 @@ test('install-shell prints the config line and does not edit config', () => {
   assert.match(res.stdout, /shell\.mjs/);
 });
 
+test('install-shell points Herdr at the dispatcher, keeps a backup, and reloads', () => {
+  // This is the only line that decides where a new pane runs. Printing it and trusting
+  // the user to paste it left worktrees silently host-only, because a terminal opened
+  // after a container is ready looks exactly like one opened before it.
+  const dir = tmp();
+  const configFile = path.join(dir, 'herdr', 'config.toml');
+  fs.mkdirSync(path.dirname(configFile), { recursive: true });
+  const original = 'onboarding = false\n[terminal]\nshell_mode = "auto"\n\n[server]\nport = 1\n';
+  fs.writeFileSync(configFile, original);
+
+  const res = wtdc(['install-shell'], { WTDC_CONFIG_FILE: configFile });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /set terminal\.default_shell/);
+
+  const after = fs.readFileSync(configFile, 'utf8');
+  assert.match(after, new RegExp(`default_shell = "${ROOT}/lib/wtdc/shell\\.mjs"`));
+  assert.match(after, /shell_mode = "auto"/, 'other settings in the same table must survive');
+  assert.match(after, /port = 1/, 'other tables must survive');
+  assert.equal(fs.readFileSync(`${configFile}.bak-before-wtdc`, 'utf8'), original,
+    'the previous config has to be recoverable, since this is the user\'s file');
+
+  // The reload is not decoration: the setting is read when the server spawns a pane, so
+  // without it the edit is inert and the failure is silent.
+  assert.match(calls('herdr'), /server reload-config/);
+});
+
+test('install-shell is safe to run again', () => {
+  const dir = tmp();
+  const configFile = path.join(dir, 'config.toml');
+  fs.writeFileSync(configFile, 'onboarding = false\n');
+  wtdc(['install-shell'], { WTDC_CONFIG_FILE: configFile });
+  const once = fs.readFileSync(configFile, 'utf8');
+
+  const res = wtdc(['install-shell'], { WTDC_CONFIG_FILE: configFile });
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /already installed/);
+  assert.equal(fs.readFileSync(configFile, 'utf8'), once, 'a second run must not rewrite anything');
+});
+
+test('install-shell refuses a config it cannot edit safely, and exits non-zero', () => {
+  const dir = tmp();
+  const configFile = path.join(dir, 'config.toml');
+  const original = '[terminal]\ndefault_shell = "/bin/sh"\n[terminal]\ndefault_shell = "/bin/dash"\n';
+  fs.writeFileSync(configFile, original);
+
+  const res = wtdc(['install-shell'], { WTDC_CONFIG_FILE: configFile });
+  assert.notEqual(res.status, 0, 'a refused edit must not look like a successful one');
+  assert.match(res.stdout, /declared 2 times/);
+  assert.equal(fs.readFileSync(configFile, 'utf8'), original, 'the file is left exactly as it was');
+});
+
 test('the worktree checkout is left pristine', () => {
   const out = execFileSync('git', ['-C', WT, 'status', '--porcelain'], { encoding: 'utf8' });
   assert.equal(out.trim(), '', `worktree should be clean, got: ${out}`);
+});
+
+// ------------------------------------------------------------ pane bookkeeping
+
+// Herdr removes a workspace as soon as its last pane closes, and a worktree whose
+// workspace is gone is a worktree the user cannot get back to from the sidebar while the
+// checkout is still on disk. These three helpers are the plugin's only knowledge of that,
+// so they are driven against the stub herdr with whatever topology each case needs.
+function paneHelper(expr, { panes } = {}) {
+  const res = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import * as herdr from ${JSON.stringify(path.join(ROOT, 'lib', 'wtdc', 'herdr.mjs'))};
+    process.stdout.write(String(${expr}));
+  `], {
+    env: {
+      ...env,
+      ...(panes ? { WTDC_STUB_PANES: JSON.stringify({ result: { panes } }) } : {}),
+    },
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 0, res.stderr);
+  return res.stdout;
+}
+
+const two = [
+  { pane_id: 'w1:p1', workspace_id: 'w1' },
+  { pane_id: 'w1:p2', workspace_id: 'w1' },
+];
+
+test('resolveTargetPane: a captured pane that is still there is used as it was', () => {
+  assert.equal(paneHelper('herdr.resolveTargetPane("w1", "w1:p2")', { panes: two }), 'w1:p2');
+});
+
+test('resolveTargetPane: a captured pane that is gone falls back to the workspace', () => {
+  // Naming a pane that is not there is rejected outright, and nothing opens at all —
+  // the user answers "yes" and gets no build, silently.
+  assert.equal(paneHelper('herdr.resolveTargetPane("w1", "w1:p9")', { panes: two }), 'w1:p1');
+  assert.equal(paneHelper('herdr.resolveTargetPane("w1")', { panes: two }), 'w1:p1');
+});
+
+test('resolveTargetPane: an empty workspace answers with nothing rather than a guess', () => {
+  assert.equal(paneHelper('herdr.resolveTargetPane("w1", "w1:p9")', { panes: [] }), '');
+});
+
+test('isLastPane: only true when this pane is the last one standing', () => {
+  assert.equal(paneHelper('herdr.isLastPane("w1", "w1:p1")', { panes: two }), 'false');
+  assert.equal(paneHelper('herdr.isLastPane("w1", "w1:p1")', { panes: two.slice(0, 1) }), 'true');
+});
+
+test('closePane: a pane that is already gone is a false, not a crash', () => {
+  // Herdr 0.9.0 is documented to give a zoomed pane its target's place, so by the time
+  // this plugin tries to retire the host pane it may not exist any more. The refusal has
+  // to be a false, or the whole handoff throws on the success path.
+  assert.equal(paneHelper('herdr.closePane("w1:p9")'), 'false');
+  assert.equal(paneHelper('herdr.closePane("")'), 'false');
+});
+
+test('closePane: a pane that is there gets closed, by id', () => {
+  reset();
+  assert.equal(paneHelper('herdr.closePane("w1:p1")', { panes: two }), 'true');
+  assert.match(calls('herdr'), /pane close w1:p1/);
 });
 
 test.after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
