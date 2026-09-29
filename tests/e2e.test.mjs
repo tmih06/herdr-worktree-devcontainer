@@ -81,10 +81,6 @@ fs.mkdirSync(path.join(WT_TEMPLATE, '.devcontainer'), { recursive: true });
 fs.writeFileSync(path.join(WT_TEMPLATE, '.devcontainer', 'devcontainer.json'),
   '{ "image": "debian:12", "features": { "ghcr.io/devcontainers/features/node:1": {} } }');
 
-const record = (tool) => (...args) => {
-  fs.appendFileSync(path.join(CALLS, tool), `${args.join(' ')}\n`);
-};
-
 // ------------------------------------------------------------------- stubs
 
 fs.writeFileSync(path.join(BIN_DIR, 'docker'), `#!/usr/bin/env bash

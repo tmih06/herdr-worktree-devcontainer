@@ -223,6 +223,15 @@ or `.devcontainer.json`, in that order, overridable with `WTDC_CONFIG_CANDIDATES
 provisions from it. Yours is authoritative: image, features, `remoteUser`, mounts and
 lifecycle commands are all used as written.
 
+By default it reads that file from the **main checkout**, not from the worktree, and reads
+it off disk rather than out of a commit. A worktree records the commit it was created at,
+not the branch it came from, so "the config as of the branch it branched from" is not a
+question git can answer — and a worktree nobody has merged yet holds a config that is
+already behind. Reading the main checkout means an edit there applies to every worktree at
+once, uncommitted, which is where edits actually happen. Set `WTDC_CONFIG_SOURCE=worktree`
+when a branch legitimately changes its own `devcontainer.json`; the dialog then shows which
+checkout the config came from, and the container is built from that worktree's own copy.
+
 The simplest version that works, and the one this repository uses for itself:
 
 ```jsonc
@@ -289,7 +298,8 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_HOSTNAME` | `branch` | container hostname: `branch`, `off`, or a literal |
 | `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label, for as long as its container exists |
 | `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
-| `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
+| `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the source directory |
+| `WTDC_CONFIG_SOURCE` | `main` | read the config from the main checkout's file on disk, or `worktree` for each worktree's own copy |
 | `WTDC_TEMPLATE` / `WTDC_IMAGE` | *(blank)* | run a prebuilt image instead of the one your config declares |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
@@ -349,6 +359,15 @@ All templates are published for **linux/amd64 and linux/arm64** as one multi-arc
 tag. That is not decoration: the CLI builds a uid-remapped copy of the image with
 an explicit `--platform`, so an amd64-only tag on an ARM host fails outright
 rather than falling back. See [`images/README.md`](images/README.md).
+
+That remap is also why the plugin reads the `devcontainer.remote.uid` label and
+writes `updateRemoteUserUID: false` when the image already ships the host's uid.
+Without it the CLI copies the whole image to change a `/etc/passwd` line that is
+already correct — a `vsc-…-uid` image per worktree, hundreds of megabytes each,
+rebuilt on every provision because the original is never the one that runs. The
+label is read from the local image, so an image that is not here yet is pulled
+first: an unreadable label is `unknown`, and `unknown` cannot be treated as
+permission to skip the check.
 
 ## State and cleanup
 

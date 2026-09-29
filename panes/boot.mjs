@@ -109,7 +109,6 @@ function render() {
   // Phase checklist, so a long build shows that it is moving through stages
   // rather than sitting on one line.
   for (const p of PHASES) {
-    const start = phaseStart(p.key) * 100;
     const end = (phaseStart(p.key) + p.share) * 100;
     const done = state.done || state.percent >= end;
     const active = !done && p.key === state.phase;

@@ -1,0 +1,26 @@
+{
+  "name": "herdr-worktree-devcontainer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Herdr plugin: a dev container per worktree",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:unit": "node --test tests/unit.test.mjs",
+    "test:e2e": "node --test tests/e2e.test.mjs",
+    "test:shell": "node --test tests/shell.test.mjs",
+    "lint": "eslint bin lib panes tests",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "prettier": "^3.9.9"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

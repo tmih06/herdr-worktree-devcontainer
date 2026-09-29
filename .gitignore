@@ -3,3 +3,7 @@
 state/
 *.log
 .DS_Store
+
+# Tooling only. The plugin itself ships no dependencies and runs on whatever node
+# Herdr already has, so this exists for `npm run lint` and `npm run format`.
+node_modules/

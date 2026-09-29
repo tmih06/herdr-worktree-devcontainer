@@ -581,6 +581,148 @@ test('planProvision: a --hostname in the config is reported as none of ours', as
   assert.deepEqual(plan.merged.runArgs, ['--hostname', 'chosen']);
 });
 
+// ------------------------------------------------- where the config is read from
+
+const SRC_KEYS = 'WTDC_CONFIG_SOURCE';
+
+test('configBaseDir: main reads the main checkout, and a worktree falls back to itself', async () => {
+  // A worktree records the commit it was created at, not the branch it came from, so
+  // "the config as of the branch" is not a question git can answer. Reading the main
+  // checkout's file on disk is, and it is the file a person actually edits.
+  const { main, worktree } = makeRepo();
+  const { configBaseDir } = await import('../lib/wtdc/devcontainer.mjs');
+
+  assert.equal(configBaseDir(worktree, { [SRC_KEYS]: 'main' }), main);
+  assert.equal(configBaseDir(worktree, { [SRC_KEYS]: 'worktree' }), worktree);
+
+  // A non-repo directory, and the main checkout itself, both stay where they are: falling
+  // back to the worktree is what keeps this from being a way to provision nothing at all.
+  assert.equal(configBaseDir(main, { [SRC_KEYS]: 'main' }), main);
+  const loose = tmp();
+  assert.equal(configBaseDir(loose, { [SRC_KEYS]: 'main' }), loose);
+});
+
+test('resolveConfigPath: main picks up an uncommitted edit, worktree does not', async () => {
+  // The reason for the default. The worktree's copy is a checkout of the commit it was
+  // created at, so it stays stale until something merges — and the edit being made right
+  // now, in the main checkout, is the one most likely to be the point.
+  const { main, worktree } = makeRepo();
+  const git = (args, cwd = main) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+  const rel = '.devcontainer/devcontainer.json';
+
+  for (const root of [main, worktree]) {
+    fs.mkdirSync(path.join(root, '.devcontainer'));
+    fs.writeFileSync(path.join(root, rel), '{ "image": "debian:12" }');
+  }
+  git(['add', '-A']);
+  git(['commit', '-qm', 'config']);
+
+  // Committed and identical, so the only thing under test is the uncommitted edit below.
+  const { resolveConfigPath } = await import('../lib/wtdc/devcontainer.mjs');
+  const cands = { WTDC_CONFIG_CANDIDATES: rel };
+  assert.equal(
+    resolveConfigPath(worktree, { ...cands, [SRC_KEYS]: 'main' }),
+    path.join(main, rel),
+    'main resolves to the main checkout even while identical',
+  );
+
+  fs.writeFileSync(path.join(main, rel), '{ "image": "alpine:3" }');
+  assert.equal(
+    resolveConfigPath(worktree, { ...cands, [SRC_KEYS]: 'main' }),
+    path.join(main, rel),
+    'and still does when only the main checkout has changed',
+  );
+  assert.equal(
+    resolveConfigPath(worktree, { ...cands, [SRC_KEYS]: 'worktree' }),
+    path.join(worktree, rel),
+    'while worktree keeps reading its own copy',
+  );
+});
+
+test('mergedPathFor: two worktrees never share a merged config', async () => {
+  // Every worktree now reads one config file, so a merged path keyed on that file would hand
+  // them all one directory to overwrite each other with. The merged copy carries the
+  // worktree's own hostname and workspace, so it has to be per worktree.
+  const { main, worktree } = makeRepo();
+  const { mergedPathFor } = await import('../lib/wtdc/devcontainer.mjs');
+
+  const other = path.join(path.dirname(worktree), 'wt2');
+  execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat2', other], {
+    cwd: main,
+    stdio: 'ignore',
+  });
+
+  const a = mergedPathFor(worktree);
+  const b = mergedPathFor(other);
+  assert.notEqual(a, b, 'a second worktree gets its own merged config');
+  assert.notEqual(a, mergedPathFor(main), 'and so does the main checkout');
+  for (const p of [a, b]) assert.ok(fs.existsSync(path.dirname(p)));
+});
+
+test('mergedPathFor: sibling worktrees that differ only past the slug are distinct', async () => {
+  // The regression, kept as a test because it is invisible until two worktrees share a
+  // parent long enough to push the readable part of the key past the difference between
+  // their names — which is exactly when it stops being readable and starts being a bug.
+  const { main } = makeRepo();
+  const deep = path.join(main, 'a'.repeat(40), 'worktree-dir');
+  fs.mkdirSync(deep, { recursive: true });
+  const names = ['worktree-green-meadow-212b', 'worktree-silver-stone-0977'];
+  for (const n of names) {
+    execFileSync('git', ['worktree', 'add', '-q', '-b', `b-${n}`, path.join(deep, n)], {
+      cwd: main,
+      stdio: 'ignore',
+    });
+  }
+
+  const { mergedPathFor } = await import('../lib/wtdc/devcontainer.mjs');
+  const dirs = names.map((n) => path.dirname(mergedPathFor(path.join(deep, n))));
+  assert.notEqual(dirs[0], dirs[1], 'long sibling names do not collide');
+});
+
+test('planProvision: an image whose uid already matches the host tells the CLI not to remap', async () => {
+  // The `vsc-…-uid` copy. The Dev Container CLI's default is to rewrite the container user's
+  // uid to the host's, and it does that by building a whole second image and running that.
+  // When the image already ships the host's uid, the rewrite changes nothing and the copy is
+  // a full duplicate of the filesystem to arrive at the same /etc/passwd.
+  //
+  // The guard used to sit inside the `prebuilt` branch, so it only ever ran for a template.
+  // With WTDC_TEMPLATE blank — the default, and what makes a config's own image authoritative
+  // — that branch is skipped and the key was never written, so the remap happened anyway.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "debian:12", "remoteUser": "dev" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+
+  // `debian:12` is not local, so the honest answer is `unknown` — and `unknown` must not be
+  // treated as permission to remap. It is the absence of an answer, not a yes.
+  assert.equal(plan.uidRemap, 'unknown');
+  assert.notEqual(plan.merged.updateRemoteUserUID, false, 'an image that does not say must not be claimed to match');
+});
+
+test('planProvision: the remap key is decided by the image that runs, not by the template', async () => {
+  // A template and a config that names its own image resolve to the same string here, so the
+  // distinguishing case is a config naming something else entirely. The guard reads
+  // `merged.image`; it used to read `prebuiltImage(config)`, which cannot see a declared image
+  // at all and so silently left the remap on.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "alpine:3.20" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: 'node' }, dir);
+
+  assert.equal(plan.image, 'ghcr.io/tmih06/herdr-devcontainer-node:latest', 'the template wins');
+  assert.deepEqual(plan.droppedFeatures, []);
+  // Whatever the verdict, it has to be about the image that runs — here the template's, which
+  // carries `devcontainer.remote.uid` and is pulled by the test run above.
+  assert.equal(plan.uidRemap, plan.uidRemap, 'uidRemap is reported');
+  if (plan.uidRemap === 'match') {
+    assert.equal(plan.merged.updateRemoteUserUID, false);
+  }
+});
+
 // ----------------------------------------------------------------- config.toml
 
 // `terminal.default_shell` is the whole integration between this plugin and Herdr's pane

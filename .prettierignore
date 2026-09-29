@@ -1,0 +1,9 @@
+# Prettier's own ignores. Kept beside the config rather than in a .prettierignore
+# so there is one file per tool and each says what it excludes and why.
+node_modules
+coverage
+
+# The devcontainer config is JSONC — it carries comments explaining every line,
+# and `//` is not valid JSON. Prettier parses it as jsonc when told to, and the
+# point of the file is those comments, so it is formatted with jsonc-parser and
+# never as json.

@@ -70,8 +70,16 @@ function requireHostTools() {
 function requireConfig(checkout, config) {
   requireHostTools();
   if (!fs.existsSync(checkout)) die(`worktree path does not exist: ${checkout}`);
-  const found = dc.findConfig(checkout, config.WTDC_CONFIG_CANDIDATES);
-  if (!found) die(`no devcontainer config in ${checkout} (looked for: ${config.WTDC_CONFIG_CANDIDATES})`);
+
+  // The base directory can be the main checkout rather than this worktree, so say which one
+  // was searched when there is nothing to find. "no devcontainer config in <worktree>" is
+  // actively misleading when the file being looked for was never going to be in the worktree.
+  const base = dc.configBaseDir(checkout, config);
+  const found = dc.findConfig(base, config.WTDC_CONFIG_CANDIDATES);
+  if (!found) {
+    const where = base === checkout ? checkout : `${base} (the main checkout, for ${checkout})`;
+    die(`no devcontainer config in ${where} (looked for: ${config.WTDC_CONFIG_CANDIDATES})`);
+  }
   return found;
 }
 
@@ -120,7 +128,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   const src = requireConfig(checkout, config);
   const slug = uniqueSlug(slugify(label), checkout);
   const project = projectFor(checkout);
-  const merged = dc.mergedPathFor(src);
+  const merged = dc.mergedPathFor(checkout);
 
   emit('inspect', phaseStart('inspect') * 100, label);
   step(`Preparing dev container for ${label}`);
@@ -323,8 +331,9 @@ function hookCreated() {
   const repo = herdr.eventRepoName();
 
   if (state.has(checkout)) return;
-  if (!dc.findConfig(checkout, config.WTDC_CONFIG_CANDIDATES)) {
-    info(`no devcontainer config in ${checkout}; skipping`);
+  if (!dc.resolveConfigPath(checkout, config)) {
+    const base = dc.configBaseDir(checkout, config);
+    info(`no devcontainer config in ${base === checkout ? checkout : base + ' (main checkout)'}; skipping`);
     return;
   }
 

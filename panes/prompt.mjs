@@ -18,10 +18,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { loadConfig } from './../lib/wtdc/config.mjs';
-import { findConfig, planProvision } from './../lib/wtdc/devcontainer.mjs';
-import { herdr, openPluginPane } from './../lib/wtdc/herdr.mjs';
+import { configBaseDir, resolveConfigPath, planProvision } from './../lib/wtdc/devcontainer.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, '..');
@@ -49,10 +48,18 @@ const config = loadConfig();
 // The plan is resolved synchronously because it is only file parsing and a git call —
 // cheap, and it is what the checkbox line has to be about. The image's local and
 // registry state is the part that can be slow, so it is filled in afterwards.
-let found = findConfig(checkout, config.WTDC_CONFIG_CANDIDATES);
-let configRel = found
-  ? path.relative(checkout, found)
-  : `${C.yellow}none found${C.reset}`;
+// The config can live in the main checkout rather than in this worktree, so the line says
+// which checkout it came from. A bare `../../../../mnt/e/.../devcontainer.json` would be
+// true and unreadable, and the whole point of the line is that it can be acted on.
+const configBase = configBaseDir(checkout, config);
+const describeConfig = (file) => {
+  if (!file) return `${C.yellow}none found${C.reset}`;
+  const rel = path.relative(configBase, file) || path.basename(file);
+  return configBase === checkout ? rel : `${rel} ${C.dim}(main checkout)${C.reset}`;
+};
+
+let found = resolveConfigPath(checkout, config);
+let configRel = describeConfig(found);
 let plan = null;
 let image = null;
 
@@ -104,10 +111,8 @@ function replan() {
   const typed = imageBuf;
   const wasDirty = imageDirty;
 
-  found = findConfig(checkout, config.WTDC_CONFIG_CANDIDATES);
-  configRel = found
-    ? path.relative(checkout, found)
-    : `${C.yellow}none found${C.reset}`;
+  found = resolveConfigPath(checkout, config);
+  configRel = describeConfig(found);
   plan = null;
   if (found) {
     try {
@@ -262,8 +267,6 @@ ${body}
 
 `);
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Module scope, because the image lookup repaints after the first frame and has to
 // redraw the box in whatever state the user has it in by then.
@@ -470,8 +473,19 @@ const stampOf = (file) => {
   }
 };
 const remember = () => {
+  // Watched in the base directory, which is the main checkout when the config is read from
+  // there. Watching the worktree instead would make the dialog blind to the only file that
+  // is actually being edited — and it would sit there looking correct, which is worse.
   for (const file of config.WTDC_CONFIG_CANDIDATES.trim().split(/\s+/).filter(Boolean)) {
-    watched.set(path.resolve(checkout, file), stampOf(path.resolve(checkout, file)));
+    watched.set(path.resolve(configBase, file), stampOf(path.resolve(configBase, file)));
+  }
+  // Also watch where the worktree's own copy would be, so a config that is edited in the
+  // worktree still registers while `WTDC_CONFIG_SOURCE` is `main` — it just does not win.
+  if (configBase !== checkout) {
+    for (const file of config.WTDC_CONFIG_CANDIDATES.trim().split(/\s+/).filter(Boolean)) {
+      const abs = path.resolve(checkout, file);
+      if (!watched.has(abs)) watched.set(abs, stampOf(abs));
+    }
   }
 };
 remember();
@@ -486,7 +500,7 @@ const watcher = setInterval(() => {
       changed = true;
     }
   }
-  // A config appearing where there was none counts too, so `findConfig` is re-run rather
+  // A config appearing where there was none counts too, so resolution is re-run rather
   // than only the file that was already there.
   if (!found) {
     for (const file of watched.keys()) {
