@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PHASES, isProgressLine, parseProgressLine, phaseStart } from "../lib/wtdc/progress.mjs";
+import {
+  PHASES,
+  isProgressLine,
+  outputRows,
+  parseProgressLine,
+  phaseStart,
+} from "../lib/wtdc/progress.mjs";
+
+test("Docker carriage returns appear as separate progress updates", () => {
+  const first = outputRows("", "layer: Downloading 10MB/50MB\rlayer: Downloading 40MB");
+  assert.deepEqual(first.rows, ["layer: Downloading 10MB/50MB"]);
+  const second = outputRows(first.partial, "/50MB\r\nlayer: Pull complete\n");
+  assert.deepEqual(second.rows.filter(Boolean), [
+    "layer: Downloading 40MB/50MB",
+    "layer: Pull complete",
+  ]);
+  assert.equal(second.partial, "");
+});
 
 test("parses progress lines and keeps tabs in the message", () => {
   assert.equal(isProgressLine("WTDC_PROGRESS\tup\t42\tbuilding"), true);

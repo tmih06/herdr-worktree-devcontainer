@@ -214,7 +214,10 @@ function provision(checkout, workspaceId = "", labelArg = "") {
 
   emit("merge", phaseStart("merge") * 100, path.basename(merged));
   try {
-    dc.buildMerged(src, merged, config, checkout);
+    dc.buildMerged(src, merged, config, checkout, (ref) => {
+      emit("pull", phaseStart("pull") * 100, ref);
+      step(`Pulling image ${ref}`);
+    });
   } catch (err) {
     die(`could not merge ${src} into ${merged}: ${err.message}`);
   }
@@ -252,6 +255,7 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   });
 
   step("Building and starting the container (this can take a while)");
+  emit("up", phaseStart("up") * 100);
   const up = dc.up(checkout, merged, config, (containerId) => {
     emit("ready", phaseStart("ready") * 100, containerId ? containerId.slice(0, 12) : "");
   });

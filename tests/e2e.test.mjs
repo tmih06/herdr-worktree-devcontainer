@@ -99,6 +99,12 @@ fs.writeFileSync(
   `#!/usr/bin/env bash
 echo "$*" >> "$WTDC_SANDBOX/calls/docker"
 a1="$1"; a2="$2"
+if [ "$a1 $a2" = "image inspect" ] && [ "\${WTDC_STUB_IMAGE_MISSING:-}" = "1" ] && [ ! -f "$WTDC_SANDBOX/pulled-image" ]; then exit 1; fi
+if [ "$a1" = "pull" ]; then
+  touch "$WTDC_SANDBOX/pulled-image"
+  printf 'layer: Downloading 10MB/50MB\rlayer: Downloading 40MB/50MB\rlayer: Pull complete\n'
+  exit 0
+fi
 if [ "$a1 $a2" = "ps -q" ]; then echo "deadbeefcafe"; exit 0; fi
 if [ "$a1 $a2" = "ps -aq" ]; then echo "deadbeefcafe"; exit 0; fi
 if [ "$a1" = "rename" ]; then exit 0; fi
@@ -253,6 +259,20 @@ test("a linked worktree mounts its git metadata into the container", () => {
     calls("mounts").split("\n").includes(expected),
     `expected the shared git dir mount, got:\n${calls("mounts")}`,
   );
+});
+
+test("a missing image reports its pull before container startup", () => {
+  fs.rmSync(path.join(sandbox, "pulled-image"), { force: true });
+  reset();
+  const res = wtdc(["provision", WT, "w9", "demo"], { WTDC_STUB_IMAGE_MISSING: "1" });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(calls("docker"), /pull mcr\.microsoft\.com\/devcontainers\/base:ubuntu/);
+  assert.match(res.stderr, /Downloading 10MB\/50MB\r.*Pull complete/s);
+  assert.match(res.stderr, /WTDC_PROGRESS\tpull\t10\t/);
+  assert.match(res.stderr, /WTDC_PROGRESS\tup\t35\t/);
+  assert.ok(res.stderr.indexOf("WTDC_PROGRESS\tpull") < res.stderr.indexOf("WTDC_PROGRESS\tup"));
+  assert.ok(res.stderr.indexOf("Pull complete") < res.stderr.indexOf("WTDC_PROGRESS\tup"));
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "demo");
 });
 
 test("nothing is injected into the image any more", () => {

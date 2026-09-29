@@ -22,7 +22,13 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PHASES, isProgressLine, parseProgressLine, phaseStart } from "../lib/wtdc/progress.mjs";
+import {
+  PHASES,
+  isProgressLine,
+  outputRows,
+  parseProgressLine,
+  phaseStart,
+} from "../lib/wtdc/progress.mjs";
 import { loadConfig } from "../lib/wtdc/config.mjs";
 import { get as stateFor } from "../lib/wtdc/state.mjs";
 import { enterContainerShell } from "../lib/wtdc/containerShell.mjs";
@@ -77,9 +83,7 @@ const BAR_WIDTH = 34;
 const LOG_LINES = 6;
 
 function bar(percent, indeterminate) {
-  // The long phase animates rather than inventing a percentage: `devcontainer
-  // up` reports nothing until it returns, so a number here would be a guess
-  // dressed up as a measurement.
+  // Pull and startup animate rather than inventing an overall percentage.
   const filled = indeterminate
     ? Math.floor((Date.now() / 120) % (BAR_WIDTH + 8))
     : Math.round((percent / 100) * BAR_WIDTH);
@@ -172,12 +176,9 @@ const child = spawn(process.execPath, [bin, "provision", checkout, workspace, la
  *  container", "no worktree path was supplied") to stdout. */
 function consume(stream) {
   let partial = "";
-  stream.on("data", (chunk) => {
-    partial += chunk.toString();
-    const rows = partial.split("\n");
-    partial = rows.pop() || "";
+  const show = (rows) => {
     for (const row of rows) {
-      const line = row.replace(/\r$/, "");
+      const line = row;
       if (!line) continue;
       if (isProgressLine(line)) {
         const p = parseProgressLine(line);
@@ -194,13 +195,24 @@ function consume(stream) {
         // Strip the plugin's own leading indentation and colour so the tail
         // reads as one column.
         const clean = line
-          .replace(/\x1b\[[0-9;]*m/g, "")
+          .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
           .replace(/^\s+/, "")
           .trim();
-        if (clean) state.log.push(clean);
+        if (clean) {
+          state.log.push(clean);
+          if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
+        }
       }
     }
     render();
+  };
+  stream.on("data", (chunk) => {
+    const next = outputRows(partial, chunk.toString());
+    partial = next.partial;
+    show(next.rows);
+  });
+  stream.on("end", () => {
+    if (partial) show([partial]);
   });
 }
 
