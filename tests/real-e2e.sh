@@ -106,6 +106,8 @@ check 'the worktree is marked in the sidebar' 'yes' \
   "$(herdr workspace get "$HOST_WS" 2>/dev/null | grep -q '"name"' && echo yes || echo no)"
 
 note "git works inside the container"
+check 'the container is named after its branch' 'real' \
+  "$(docker inspect -f '{{.Config.Hostname}}' "$CONTAINER_ID" 2>/dev/null)"
 check 'the branch is visible in the container' 'real' \
   "$(docker exec -u "$CUSER" -w "$CWS" "$CONTAINER_ID" git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 check 'the checkout is clean in the container' '' \
@@ -218,6 +220,12 @@ else
 
   # devcontainer up replaces the container, so the ids the earlier checks used are stale.
   CONTAINER_ID="$(field container_id)"
+
+  # The prompt says `dev@<branch>:`, so the hostname has to be the branch. Read from the
+  # container rather than the screen, because this is the container's own name and the
+  # screen is whatever the shell last drew.
+  check 'the container is named after its branch' 'real' \
+    "$(docker inspect -f '{{.Config.Hostname}}' "$CONTAINER_ID" 2>/dev/null)"
 fi
 
 note "teardown"

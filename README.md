@@ -155,15 +155,36 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_BUILD_TIMEOUT` | `1800` | seconds to wait for the readiness marker |
 | `WTDC_KEEP_CONTAINER` | `0` | keep the container when the worktree is removed |
 | `WTDC_OPEN_CONTAINER_PANE` | `1` | open a container tab when the build finishes |
+| `WTDC_HOSTNAME` | `branch` | container hostname: `branch`, `off`, or a literal |
 | `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label |
 | `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
 | `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
 | `WTDC_TEMPLATE` / `WTDC_IMAGE` | `base` | run a prebuilt image instead of building one |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
-authoritative; the plugin injects nothing but a readiness marker. Object-form
-`postCreateCommand` is rejected rather than silently reshaped, because it cannot
-be appended to without changing its meaning.
+authoritative; the plugin injects nothing but a readiness marker and a
+`--hostname`. Object-form `postCreateCommand` is rejected rather than silently
+reshaped, because it cannot be appended to without changing its meaning.
+
+### The prompt says which worktree you are in
+
+```
+dev@feature-login-form:/workspaces/feature-login-form$
+```
+
+That part after the `@` is the container's hostname, which Docker otherwise sets
+to the container id — `dev@f4f6e36af45d:` tells you nothing. The plugin passes
+`--hostname` to the container it starts, using the branch the worktree is
+checked out on, folded into a legal hostname (`feat/payments` becomes
+`feat-payments`, uppercase and underscores become hyphens, and it is capped at 63
+characters).
+
+Two things worth knowing: a hostname is fixed when a container is created, so
+changing `WTDC_HOSTNAME` applies to the *next* provision rather than to a
+container that is already running; and a `--hostname` in your own
+`devcontainer.json` `runArgs` always wins, because your config is authoritative
+about your container. Set `WTDC_HOSTNAME=off` to keep the container id, or a
+literal string to pin it.
 
 ### Prebuilt images
 

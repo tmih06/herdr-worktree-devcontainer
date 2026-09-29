@@ -124,7 +124,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
 
   emit('merge', phaseStart('merge') * 100, path.basename(merged));
   try {
-    dc.buildMerged(src, merged, config);
+    dc.buildMerged(src, merged, config, checkout);
   } catch (err) {
     if (/object-form postCreateCommand/.test(err.message)) {
       die(`${src} uses the object form of postCreateCommand, which cannot be

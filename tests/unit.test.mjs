@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { stripComments, stripTrailingCommas, parseJsonc } from '../lib/wtdc/jsonc.mjs';
 import { parseEnvFile } from '../lib/wtdc/config.mjs';
 import { findByCwd, set, del, get, patch } from '../lib/wtdc/state.mjs';
-import { gitDirMount, buildMerged } from '../lib/wtdc/devcontainer.mjs';
+import { gitDirMount, buildMerged, branchHostname } from '../lib/wtdc/devcontainer.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-test-'));
 
@@ -191,6 +191,91 @@ test('buildMerged: an array postCreateCommand is chained, not joined with spaces
   // The CLI execs the joined string as one line, so a space join would silently
   // run only the first command.
   assert.equal(merged.postCreateCommand, 'apt-get update && make dev && id -un > /tmp/wtdc-user');
+});
+
+test('buildMerged: names the container after its branch, through runArgs', () => {
+  // The hostname is what the prompt shows after the @, and it is fixed when the
+  // container is created, so it has to reach `docker run` as a flag. runArgs is the one
+  // place the CLI passes extra flags straight through.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  const wt = makeRepo().worktree;
+  fs.writeFileSync(src, '{ "image": "debian:12", "runArgs": ["--init"] }');
+
+  buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, wt);
+  const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+
+  assert.ok(merged.runArgs.includes('--hostname'), 'a --hostname flag is added');
+  const hostname = merged.runArgs[merged.runArgs.indexOf('--hostname') + 1];
+  assert.equal(hostname, 'feat', 'the worktree is on the branch makeRepo checked it out on');
+  assert.ok(merged.runArgs.includes('--init'), 'existing runArgs survive');
+});
+
+test('buildMerged: a --hostname in the repo\'s own runArgs is never overridden', () => {
+  // The repo is authoritative about its container, the same way it is about its image.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  const wt = makeRepo().worktree;
+
+  for (const declared of [['--hostname', 'chosen-by-the-repo'], ['--hostname=also-chosen']]) {
+    fs.writeFileSync(src, JSON.stringify({ image: 'debian:12', runArgs: declared }));
+    buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, wt);
+    const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+    assert.deepEqual(merged.runArgs, declared, `runArgs ${JSON.stringify(declared)} must be left alone`);
+  }
+});
+
+test('buildMerged: WTDC_HOSTNAME=off leaves the prompt showing the container id', () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '', WTDC_HOSTNAME: 'off' }, makeRepo().worktree);
+  const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.equal(merged.runArgs, undefined, 'no runArgs are invented');
+});
+
+test('buildMerged: a config with no runArgs at all gets a table for it', () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  // makeRepo's linked worktree is checked out on `feat`, not `wt`.
+  buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, makeRepo().worktree);
+  const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(Array.isArray(merged.runArgs), 'runArgs has to exist to be appended to');
+  assert.deepEqual(merged.runArgs, ['--hostname', 'feat']);
+});
+
+test('buildMerged: a literal WTDC_HOSTNAME is used as given', () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '', WTDC_HOSTNAME: 'my-box' }, makeRepo().worktree);
+  const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.deepEqual(merged.runArgs, ['--hostname', 'my-box']);
+});
+
+test('branchHostname: branch names are folded into something a container may be called', () => {
+  // The name is read in a prompt and typed into docker commands, so it has to be a legal
+  // DNS label: letters, digits and hyphens, at most 63, no leading or trailing hyphen.
+  assert.equal(branchHostname('feature123'), 'feature123');
+  assert.equal(branchHostname('feat/payments'), 'feat-payments');
+  assert.equal(branchHostname('Fix_Thing'), 'fix-thing');
+  assert.equal(branchHostname('  spaced  '), 'spaced');
+  assert.equal(branchHostname('a--b'), 'a-b', 'runs of hyphens collapse');
+  assert.equal(branchHostname('-lead-and-trail-'), 'lead-and-trail');
+  assert.equal(branchHostname('x'.repeat(200)).length, 63, 'and it is capped');
+  assert.equal(branchHostname('x'.repeat(70) + '-trailing'), 'x'.repeat(63), 'the cap does not leave a trailing hyphen');
+  assert.match(branchHostname('123'), /^wt-/, 'an all-digits label would read like an address');
+  assert.match(branchHostname(''), /^wt/, 'and an empty one is not a hostname');
+  assert.match(branchHostname('///'), /^wt$/);
 });
 
 test('buildMerged: object-form postCreateCommand is rejected, not reshaped', () => {

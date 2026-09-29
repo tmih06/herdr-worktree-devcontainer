@@ -214,9 +214,10 @@ test('a linked worktree mounts its git metadata into the container', () => {
 
 test('nothing is injected into the image any more', () => {
   // The repo's own config is authoritative: no sshd feature, no published port,
-  // no in-container herdr install.
+  // no in-container herdr install. The one flag the plugin adds is the hostname, which
+  // is what the prompt shows and is covered by its own tests.
   const merged = JSON.parse(fs.readFileSync(state().entries[WT].merged_config, 'utf8'));
-  assert.deepEqual(merged.runArgs, ['--init'], 'no SSH port is published');
+  assert.deepEqual(merged.runArgs, ['--init', '--hostname', 'demo'], 'no SSH port is published');
   assert.equal(Object.keys(merged.features || {}).length, 0, 'no feature is injected');
   assert.match(merged.postCreateCommand, /&& id -un > \/tmp\/wtdc-user$/);
 });
