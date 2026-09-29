@@ -57,10 +57,38 @@ without guessing.
 
 Create a worktree the way you normally do (`prefix+shift+g`, or
 `herdr worktree create`). If the checkout has a devcontainer config, an overlay
-asks whether to build it. Answer yes and a setup screen opens zoomed over that
-worktree's pane, with a progress bar through each stage. It holds the keyboard
-until the container is ready, and `Esc` cancels. The plugin notifies you with a
-sound when it finishes, and a different one if it fails.
+asks whether to build it — and tells you what answering yes would cost, because
+that is not knowable from the config file alone:
+
+```
+  Dev container
+
+  Worktree  feature-login-form
+            /home/you/.herdr/worktrees/myrepo/feature-login-form
+  Config    .devcontainer/devcontainer.json
+            repo myrepo
+  Image     ghcr.io/tmih06/herdr-devcontainer-node:latest
+            not on this machine — will be pulled  138 MB
+  Features  none
+  Setup     no image build — a docker run
+            user dev
+            hostname feature-login-form
+```
+
+The image line is the part worth having: whether it is already on this machine,
+whether the registry has published a newer one, and how big a pull would be. It
+is resolved *after* the first frame and fills in when it arrives, so a slow
+registry never holds the question hostage — and when it cannot be answered the
+line says so rather than implying the image is current.
+
+That description comes from the same function provisioning uses, so it cannot
+drift from what actually runs. `Features` names what a template would drop, and
+`Setup` distinguishes a `docker run` from a per-worktree image build.
+
+Answer yes and a setup screen opens zoomed over that worktree's pane, with a
+progress bar through each stage. It holds the keyboard until the container is
+ready, and `Esc` cancels. The plugin notifies you with a sound when it finishes,
+and a different one if it fails.
 
 **When the build succeeds, that pane becomes the container terminal.** The
 worktree's first pane was spawned before the container existed, so it is a host

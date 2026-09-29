@@ -324,6 +324,118 @@ test('the title boot-launch waits for is the one the manifest declares', async (
     `the manifest and PROMPT_PANE_TITLE disagree about the prompt's title`);
 });
 
+// ------------------------------------------------------------- image information
+
+test('compareImage: only a matching digest means up to date', async () => {
+  // The failure this guards is the reassuring one: an unknown registry answering
+  // "up to date" is worse than saying nothing, because the user acts on it.
+  const { compareImage } = await import('../lib/wtdc/imageInfo.mjs');
+  const same = { digest: 'sha256:aaa' };
+  const other = { digest: 'sha256:bbb' };
+
+  assert.equal(compareImage(null, { digest: 'sha256:aaa' }), 'absent');
+  assert.equal(compareImage(same, { digest: 'sha256:aaa' }), 'up-to-date');
+  assert.equal(compareImage(same, other), 'update-available');
+  assert.equal(compareImage(same, null), 'unknown', 'an unreachable registry is not an up-to-date image');
+  assert.equal(compareImage({ digest: '' }, { digest: 'sha256:aaa' }), 'unknown',
+    'an image built locally has no digest to compare, which is not the same as current');
+});
+
+test('formatSize: sizes a pull, which are large, without lying about small ones', async () => {
+  const { formatSize } = await import('../lib/wtdc/imageInfo.mjs');
+  assert.equal(formatSize(0), '', 'no size is better than a rounded-up wrong one');
+  assert.equal(formatSize(512 * 1024), '512 KB');
+  assert.equal(formatSize(105 * 1024 * 1024), '105 MB');
+  assert.equal(formatSize(1.5 * 1024 * 1024 * 1024), '1.5 GB');
+});
+
+// ------------------------------------------------------------------ what will run
+
+test('planProvision: describes the build without doing it', async () => {
+  // The prompt shows this plan, so a plan that is not the plan provisioning runs is a
+  // prompt nobody should believe.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, `{
+    "image": "debian:12",
+    "features": { "ghcr.io/devcontainers/features/node:1": {} },
+    "postCreateCommand": "echo hi"
+  }`);
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+
+  assert.equal(plan.image, 'debian:12', 'the declared image is what runs');
+  assert.equal(plan.imageSource, 'devcontainer.json');
+  assert.equal(plan.buildsImage, true, 'a feature is what makes the CLI derive an image');
+  assert.deepEqual(plan.keptFeatures, ['ghcr.io/devcontainers/features/node:1']);
+  assert.deepEqual(plan.droppedFeatures, []);
+  assert.match(plan.merged.postCreateCommand, /^echo hi && id -un > \/tmp\/wtdc-user$/);
+
+  // And it wrote nothing: the merged config is only ever written by buildMerged.
+  assert.deepEqual(fs.readdirSync(dir), ['devcontainer.json']);
+});
+
+test('planProvision: a config with no features builds nothing, template or not', async () => {
+  // This is the case that made the old warning wrong. "no prebuilt image configured" was
+  // true for every provision once WTDC_TEMPLATE defaulted to blank, including all of
+  // these — which are a docker run, not a build.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  for (const config of [
+    { WTDC_IMAGE: '', WTDC_TEMPLATE: '' },
+    { WTDC_IMAGE: '', WTDC_TEMPLATE: 'base' },
+  ]) {
+    const plan = planProvision(src, config, dir);
+    assert.equal(plan.buildsImage, false, `with ${JSON.stringify(config)}`);
+    assert.deepEqual(plan.keptFeatures, []);
+  }
+});
+
+test('planProvision: a template replaces the image and says which features it drops', async () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, `{
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+    "features": { "ghcr.io/devcontainers/features/node:1": {} }
+  }`);
+
+  const { planProvision, prebuiltImage } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: 'base', WTDC_IMAGE_REMOTE_USER: 'dev' }, dir);
+
+  assert.equal(plan.image, prebuiltImage({ WTDC_TEMPLATE: 'base' }), 'the template wins');
+  assert.equal(plan.imageSource, 'WTDC_TEMPLATE', 'and the prompt can say where it came from');
+  assert.deepEqual(plan.droppedFeatures, ['ghcr.io/devcontainers/features/node:1']);
+  assert.equal(plan.buildsImage, false, 'no features survive, so there is nothing to build');
+  assert.equal(plan.remoteUser, 'dev');
+});
+
+test('planProvision: the hostname it will set is the one it reports', async () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+  assert.ok(plan.hostname, 'a branch-shaped worktree still yields a legal label');
+  assert.ok(plan.merged.runArgs.includes(plan.hostname));
+});
+
+test('planProvision: a --hostname in the config is reported as none of ours', async () => {
+  // The prompt must not claim a hostname the container will not have.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "debian:12", "runArgs": ["--hostname", "chosen"] }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+  assert.equal(plan.hostname, '');
+  assert.deepEqual(plan.merged.runArgs, ['--hostname', 'chosen']);
+});
+
 // ----------------------------------------------------------------- config.toml
 
 // `terminal.default_shell` is the whole integration between this plugin and Herdr's pane

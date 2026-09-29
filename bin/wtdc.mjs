@@ -112,15 +112,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   detail(`merged     ${merged}`);
 
   const prebuilt = dc.prebuiltImage(config);
-  if (!prebuilt) {
-    warn('no prebuilt image configured, so this builds an image per worktree (~25s warm, minutes cold)');
-    if (fs.existsSync(path.join(ROOT, 'images', 'manifest.json'))) {
-      detail('for ~4s instead set WTDC_TEMPLATE in your config.env:');
-      detail('  base | node | python | rust  (see images/README.md)');
-    }
-  } else {
-    detail(`image     ${prebuilt}`);
-  }
+  if (prebuilt) detail(`image     ${prebuilt}`);
 
   emit('merge', phaseStart('merge') * 100, path.basename(merged));
   try {
@@ -132,6 +124,21 @@ function provision(checkout, workspaceId = '', labelArg = '') {
    strings and re-run.`);
     }
     die(`could not merge ${src} into ${merged}: ${err.message}`);
+  }
+
+  // Whether this provision builds an image is a property of the *merged* config, not of
+  // the plugin's settings: the CLI derives a per-workspace image when the config declares
+  // features, and does nothing extra when it declares none. Warning on "no prebuilt image
+  // configured" got this backwards — with no template set that was every provision,
+  // including the ones that are a `docker run`, so it cried wolf on the fast path.
+  const derived = Object.keys(JSON.parse(fs.readFileSync(merged, 'utf8')).features || {});
+  if (derived.length) {
+    warn(`this build derives a per-worktree image from ${derived.length} feature(s) `
+      + '(~25s warm, minutes cold)');
+    detail('to skip that, name a prebuilt image in your devcontainer.json, or set WTDC_TEMPLATE');
+    if (fs.existsSync(path.join(ROOT, 'images', 'manifest.json'))) {
+      detail('  base | node | python | rust  (see images/README.md)');
+    }
   }
 
   // Persist before the slow work, so a crash during the build still leaves
