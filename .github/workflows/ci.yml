@@ -1,0 +1,111 @@
+name: ci
+
+# Four checks, on every push.
+#
+# Why every push and not just main: this is a plugin that runs as someone edits,
+# so the commit that breaks a check is the one still sitting in someone's
+# worktree. A branch-only gate reports the breakage hours later, on a machine that
+# is not the one that caused it, by which point the person has moved on. Runs are
+# seconds — 102 tests, no build, no image — so there is nothing to save by waiting.
+#
+# Deliberately not here: tests/real-e2e.sh and tests/prompt-keys.sh. Both drive a
+# real Herdr over a real PTY, which does not exist on a runner, and both exit 0
+# when the tool they need is missing. Adding them would produce a green check that
+# ran nothing, which is worse than no check at all — it looks like coverage and is
+# not. They are the reason to run this repo's tests; they are not CI's.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # One place, so a pinned tool version cannot be one number in three workflows.
+  GITLEAKS_VERSION: 8.28.0
+
+jobs:
+  # The cheapest thing that can fail, first, and on its own so a formatting slip
+  # is not reported as a broken build.
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prettier
+        run: npm run format:check
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: ESLint
+        run: npm run lint
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The e2e suite here is stubbed: it writes fake `docker`, `git` and
+      # `devcontainer` binaries and asserts on what the plugin asked them to do,
+      # so it needs no daemon and no CLI. That is what makes it worth running on
+      # every push. The real thing is tests/real-e2e.sh, which cannot run here and
+      # is not pretended at.
+      - name: node --test
+        run: npm test
+
+  # Secrets, before one can be pushed with it in. A hard gate: gitleaks exits
+  # non-zero on a finding, so this fails the push rather than annotating it.
+  #
+  # Run as the CLI rather than through `gitleaks/gitleaks-action`, for two reasons
+  # that are about being able to state what the check does. The action runs a
+  # container and gates on a licence key for organisation-owned repos, and its
+  # exit-code behaviour on a finding is not something its own README settles. The
+  # CLI's exit code is the thing being relied on, and it is checkable without a
+  # runner.
+  #
+  # `fetch-depth: 0` is not optional. Gitleaks scans history, and the default
+  # clone is one commit deep, so a shallow scan reports a clean repository no
+  # matter what was committed before — a credential check that cannot fail.
+  credentials:
+    name: credentials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      # Verified against this repository's full history before the gate was added:
+      # 41 commits, no findings, so this is green on arrival rather than a gate
+      # that starts red. `--redact` so a real finding reports where it is without
+      # printing the secret into a log.
+      - name: Scan history for secrets
+        run: gitleaks detect --redact --verbose --source .

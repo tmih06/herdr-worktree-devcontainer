@@ -411,16 +411,25 @@ than a stale manifest.
 ## Tests
 
 ```sh
-node --test tests/*.test.mjs   # unit + stubbed e2e + dispatcher
-bash tests/prompt-keys.sh      # the overlay, driven through a real PTY
-bash tests/real-e2e.sh         # needs docker, devcontainer, and a live Herdr
+npm test                        # unit + stubbed e2e + dispatcher  (node --test tests/*.test.mjs)
+npm run lint                    # eslint, recommended rules only
+npm run format                  # prettier --write .   (format:check is the gate)
+bash tests/prompt-keys.sh       # the overlay, driven through a real PTY
+bash tests/real-e2e.sh          # needs docker, devcontainer, and a live Herdr
 ```
+
+The plugin itself has no dependencies and no build step — it is plain ESM run by
+the node Herdr already has. Everything in `devDependencies` exists for the two
+checks above, and CI runs the same scripts rather than its own invocations, so
+`npm test` and the test job cannot drift apart.
 
 `tests/real-e2e.sh` is the one that proves the design: it provisions a real
 container, drives the dispatcher through an actual PTY to confirm a new terminal
 lands inside it, and then opens a real setup screen over a real workspace to
 confirm the worktree's workspace is still there afterwards and that its terminal
-is the container. It skips with a reason when its tools are missing.
+is the container. It skips with a reason when its tools are missing — which is
+also why it is not in CI, where it would exit 0 having tested nothing and read as
+a green check.
 
 `WTDC_IMAGE` overrides the image the real test provisions, which is how to run it
 on a host whose architecture the published templates do not cover:
