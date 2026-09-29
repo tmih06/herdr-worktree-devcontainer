@@ -22,7 +22,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PHASES, isProgressLine, parseProgressLine } from "../lib/wtdc/progress.mjs";
+import { PHASES, isProgressLine, parseProgressLine, phaseStart } from "../lib/wtdc/progress.mjs";
 import { loadConfig } from "../lib/wtdc/config.mjs";
 import { get as stateFor } from "../lib/wtdc/state.mjs";
 import { enterContainerShell } from "../lib/wtdc/containerShell.mjs";
@@ -68,16 +68,6 @@ const state = {
 };
 
 const byKey = Object.fromEntries(PHASES.map((p) => [p.key, p]));
-
-/** Cumulative percent where a phase starts, so the bar never jumps backwards. */
-function phaseStart(key) {
-  let acc = 0;
-  for (const p of PHASES) {
-    if (p.key === key) return acc;
-    acc += p.share;
-  }
-  return acc;
-}
 
 function elapsed() {
   return ((Date.now() - state.startedAt) / 1000).toFixed(0);

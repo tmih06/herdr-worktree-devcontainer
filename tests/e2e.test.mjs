@@ -69,7 +69,7 @@ const WT_BROKEN = path.join(sandbox, "worktrees", "broken");
 fs.mkdirSync(path.join(WT_BROKEN, ".devcontainer"), { recursive: true });
 fs.writeFileSync(
   path.join(WT_BROKEN, ".devcontainer", "devcontainer.json"),
-  '{ "image": "debian:12", "postCreateCommand": {"x":"y"} }',
+  '{ "image": "debian:12", "postCreateCommand": "echo ok" }',
 );
 
 // A valid, never-provisioned worktree, for the paths that must be reached
@@ -123,6 +123,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$sub" = "up" ] || exit 0
+[ -z "$WTDC_STUB_UP_FAIL" ] || exit 23
 printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"devuser"}'
 `,
 );
@@ -256,7 +257,8 @@ test("nothing is injected into the image any more", () => {
   const merged = JSON.parse(fs.readFileSync(state().entries[WT].merged_config, "utf8"));
   assert.deepEqual(merged.runArgs, ["--init", "--hostname", "demo"], "no SSH port is published");
   assert.equal(Object.keys(merged.features || {}).length, 0, "no feature is injected");
-  assert.match(merged.postCreateCommand, /&& id -un > \/tmp\/wtdc-user$/);
+  assert.equal(merged.postCreateCommand, "echo upstream-ok");
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
 test("the repo's own devcontainer.json decides the image, by default", () => {
@@ -337,19 +339,18 @@ test("a second provision is idempotent", () => {
   assert.equal(state().entries[WT].container_id, "deadbeefcafe");
 });
 
-test("object-form postCreateCommand is rejected with an actionable message", () => {
+test("object-form postCreateCommand is passed through to the CLI", () => {
   const res = wtdc(["provision", WT_OBJFORM, "w10", "objform"]);
-  assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /object form of postCreateCommand/);
-  assert.equal(
-    state().entries[WT_OBJFORM],
-    undefined,
-    "a failed provision must leave no state behind",
-  );
+  assert.equal(res.status, 0, res.stderr);
+  const entry = state().entries[WT_OBJFORM];
+  const merged = JSON.parse(fs.readFileSync(entry.merged_config, "utf8"));
+  assert.deepEqual(merged.postCreateCommand, { server: "make dev" });
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
 test("a failed provision leaves the worktree retryable", () => {
-  wtdc(["provision", WT_BROKEN, "w11", "broken"]);
+  const res = wtdc(["provision", WT_BROKEN, "w11", "broken"], { WTDC_STUB_UP_FAIL: "1" });
+  assert.notEqual(res.status, 0);
   assert.equal(state().entries[WT_BROKEN], undefined, "no half-written entry may block a retry");
 });
 
@@ -578,6 +579,18 @@ test("WTDC_KEEP_CONTAINER=1 leaves the container running", () => {
   assert.equal(state().entries[WT], undefined, "state is still dropped");
 });
 
+test("WTDC_KEEP_CONTAINER=1 also survives the worktree removal hook", () => {
+  wtdc(["provision", WT, "w9", "demo"]);
+  reset();
+  const res = wtdc(["hook-removed"], {
+    WTDC_KEEP_CONTAINER: "1",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify({ data: { worktree: { path: WT } } }),
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(state().entries[WT], undefined);
+  assert.doesNotMatch(calls("docker"), /rm -f/, "the orphan sweep must honor keep-container");
+});
+
 test("worktree.removed sweeps containers even with no state entry", () => {
   // A build that failed after `up` leaves a container nobody is tracking.
   const orphan = path.join(sandbox, "worktrees", "orphan");
@@ -682,6 +695,34 @@ test("install-shell refuses a config it cannot edit safely, and exits non-zero",
   assert.notEqual(res.status, 0, "a refused edit must not look like a successful one");
   assert.match(res.stdout, /declared 2 times/);
   assert.equal(fs.readFileSync(configFile, "utf8"), original, "the file is left exactly as it was");
+});
+
+test("install-shell leaves an unreadable config path alone", () => {
+  const dir = tmp();
+  const configFile = path.join(dir, "config.toml");
+  fs.mkdirSync(configFile);
+  reset();
+
+  const res = wtdc(["install-shell"], { WTDC_CONFIG_FILE: configFile });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /could not read/);
+  assert.ok(fs.statSync(configFile).isDirectory());
+  assert.doesNotMatch(calls("herdr"), /server reload-config/);
+});
+
+test("install-shell does not change the config when its backup cannot be written", () => {
+  const dir = tmp();
+  const configFile = path.join(dir, "config.toml");
+  const original = '[terminal]\ndefault_shell = "/bin/sh"\n';
+  fs.writeFileSync(configFile, original);
+  fs.mkdirSync(`${configFile}.bak-before-wtdc`);
+  reset();
+
+  const res = wtdc(["install-shell"], { WTDC_CONFIG_FILE: configFile });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /could not back up/);
+  assert.equal(fs.readFileSync(configFile, "utf8"), original);
+  assert.doesNotMatch(calls("herdr"), /server reload-config/);
 });
 
 test("the worktree checkout is left pristine", () => {

@@ -9,7 +9,7 @@
 //   provision <path> [ws] [label]
 //   teardown  <path> [--force]
 //   status
-//   install-shell          print the terminal.default_shell line to add
+//   install-shell          configure Herdr to use the shell dispatcher
 //   action <id>            plugin action entry point
 //
 // See README.md for configuration.
@@ -190,11 +190,6 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   try {
     dc.buildMerged(src, merged, config, checkout);
   } catch (err) {
-    if (/object-form postCreateCommand/.test(err.message)) {
-      die(`${src} uses the object form of postCreateCommand, which cannot be
-   merged without changing its meaning. Convert it to a string or an array of
-   strings and re-run.`);
-    }
     die(`could not merge ${src} into ${merged}: ${err.message}`);
   }
 
@@ -416,6 +411,7 @@ function hookRemoved() {
   if (!checkout) return;
 
   if (state.has(checkout)) teardown(checkout);
+  if (config.WTDC_KEEP_CONTAINER === "1") return;
   // Sweep by Docker label, so a build that failed before state was written is
   // still cleaned up.
   const removed = dc.removeOrphans(checkout);
@@ -468,8 +464,11 @@ function installShell() {
   let original = "";
   try {
     original = fs.readFileSync(file, "utf8");
-  } catch {
-    /* no config yet, or unreadable: fall through and create it */
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      process.stdout.write(`error: could not read ${file}: ${err.message}\n`);
+      return 1;
+    }
   }
 
   const edit = setTomlKey(original, "terminal", "default_shell", shellPath);
@@ -489,8 +488,9 @@ function installShell() {
       const backup = `${file}.bak-before-wtdc`;
       try {
         fs.writeFileSync(backup, original);
-      } catch {
-        /* a read-only config dir is reported by the write below */
+      } catch (err) {
+        process.stdout.write(`error: could not back up ${file} to ${backup}: ${err.message}\n`);
+        return 1;
       }
       process.stdout.write(`backed up ${file} to ${backup}\n`);
     }
@@ -612,9 +612,8 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
 // ---------------------------------------------------------------------- entry
 
 function main() {
-  // Hard anti-recursion guard, checked before anything else. The marker file is
-  // the dependable signal: postCreateCommand writes it, so it only exists in a
-  // container this plugin provisioned.
+  // Shells entered through the dispatcher carry WTDC_IN_CONTAINER=1, so a copy of
+  // this CLI invoked there cannot try to provision another container.
   if (insideContainer()) {
     process.stdout.write("worktree-devcontainer: disabled inside a dev container\n");
     return;
@@ -663,7 +662,7 @@ terminals inside it, keeping the worktree grouped under its repo.
   provision <path> [ws] [label]
   teardown  <path> [--force]
   status
-  install-shell           print the terminal.default_shell line to add
+  install-shell           configure Herdr to use the shell dispatcher
   action <id>             plugin action entry point
 `);
       return;

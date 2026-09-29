@@ -26,10 +26,10 @@ check() {
 
 # drive <label> <python-bytes-literal> -> prints "alive|frames" summary
 drive() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "${3:-0.5}" <<'PY'
 import os, pty, select, shutil, signal, sys, time
 
-label, keys = sys.argv[1], sys.argv[2].encode().decode("unicode_escape").encode("latin-1")
+label, keys, gap = sys.argv[1], sys.argv[2].encode().decode("unicode_escape").encode("latin-1"), float(sys.argv[3])
 PLUGIN_ROOT = os.environ["WTDC_PLUGIN_ROOT"]
 base = "/tmp/wtdc-prompt-test"
 shutil.rmtree(base, ignore_errors=True)
@@ -91,7 +91,7 @@ for chunk in keys.split(b"|"):
         os.write(fd, chunk)
     except OSError:
         break
-    pump(0.5)
+    pump(gap)
 pump(0.6)
 
 # Is the process still alive and still drawing the prompt? A prompt that was supposed to
@@ -143,6 +143,9 @@ printf 'prompt key handling\n'
 
 out="$(drive 'down-arrow' '\x1b[B')"
 check 'down arrow does not dismiss the prompt' 'alive' "$(echo "$out" | cut -d' ' -f1)"
+
+out="$(drive 'fragmented-down-arrow' '\x1b|\x5bB' 0.01)"
+check 'a fragmented down arrow does not dismiss the prompt' 'alive' "$(echo "$out" | cut -d' ' -f1)"
 
 out="$(drive 'up-arrow' '\x1b[A')"
 check 'up arrow does not dismiss the prompt' 'alive' "$(echo "$out" | cut -d' ' -f1)"

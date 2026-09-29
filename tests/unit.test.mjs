@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { stripComments, stripTrailingCommas, parseJsonc } from "../lib/wtdc/jsonc.mjs";
 import { parseEnvFile } from "../lib/wtdc/config.mjs";
 import { findByCwd, set, del, get, patch } from "../lib/wtdc/state.mjs";
-import { gitDirMount, buildMerged, branchHostname } from "../lib/wtdc/devcontainer.mjs";
+import { gitDirMount, buildMerged, branchHostname, up } from "../lib/wtdc/devcontainer.mjs";
 
 // Scratch directories, removed when the file finishes. Without the cleanup every run
 // leaves one behind per test, which turns /tmp into a few hundred stale directories
@@ -176,7 +176,7 @@ test("gitDirMount: a directory that is not a repo yields nothing", () => {
 
 // ---------------------------------------------------------------- merged config
 
-test("buildMerged: appends the readiness marker and preserves the repo config", () => {
+test("buildMerged: preserves lifecycle commands and waits for postCreateCommand", () => {
   const dir = tmp();
   const src = path.join(dir, "devcontainer.json");
   const out = path.join(dir, "out.json");
@@ -201,20 +201,30 @@ test("buildMerged: appends the readiness marker and preserves the repo config", 
     "user features must survive: nothing is injected any more",
   );
   assert.deepEqual(merged.runArgs, ["--init"], "no port is published any more");
-  assert.match(merged.postCreateCommand, /^echo upstream-ok && id -un > \/tmp\/wtdc-user$/);
+  assert.equal(merged.postCreateCommand, "echo upstream-ok");
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
-test("buildMerged: an array postCreateCommand is chained, not joined with spaces", () => {
+test("buildMerged: an array postCreateCommand keeps its argv form", () => {
   const dir = tmp();
   const src = path.join(dir, "devcontainer.json");
   const out = path.join(dir, "out.json");
-  fs.writeFileSync(src, '{ "postCreateCommand": ["apt-get update", "make dev"] }');
+  fs.writeFileSync(
+    src,
+    JSON.stringify({
+      postCreateCommand: ["argv-probe", "argument with spaces", "semi;colon", "single'quote"],
+    }),
+  );
 
   buildMerged(src, out, {});
   const merged = JSON.parse(fs.readFileSync(out, "utf8"));
-  // The CLI execs the joined string as one line, so a space join would silently
-  // run only the first command.
-  assert.equal(merged.postCreateCommand, "apt-get update && make dev && id -un > /tmp/wtdc-user");
+  assert.deepEqual(merged.postCreateCommand, [
+    "argv-probe",
+    "argument with spaces",
+    "semi;colon",
+    "single'quote",
+  ]);
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
 test("buildMerged: names the container after its branch, through runArgs", () => {
@@ -320,14 +330,59 @@ test("branchHostname: branch names are folded into something a container may be 
   assert.match(branchHostname("///"), /^wt$/);
 });
 
-test("buildMerged: object-form postCreateCommand is rejected, not reshaped", () => {
+test("buildMerged: object-form postCreateCommand is preserved for the CLI", () => {
   const dir = tmp();
   const src = path.join(dir, "devcontainer.json");
   fs.writeFileSync(src, '{ "postCreateCommand": { "server": "make dev" } }');
-  assert.throws(
-    () => buildMerged(src, path.join(dir, "out.json"), {}),
-    /object-form postCreateCommand/,
+  buildMerged(src, path.join(dir, "out.json"), {});
+  const merged = JSON.parse(fs.readFileSync(path.join(dir, "out.json"), "utf8"));
+  assert.deepEqual(merged.postCreateCommand, { server: "make dev" });
+  assert.equal(merged.waitFor, "postCreateCommand");
+});
+
+test("up uses the build timeout and returns CLI failures", () => {
+  const dir = tmp();
+  const oldPath = process.env.PATH;
+  const oldShare = process.env.WTDC_SHARE_HERDR_BIN;
+  const oldMode = process.env.WTDC_TEST_DEVCONTAINER_MODE;
+  fs.writeFileSync(
+    path.join(dir, "devcontainer"),
+    `#!/bin/sh\ncase "$WTDC_TEST_DEVCONTAINER_MODE" in\n  fail) exit 23 ;;\n  slow) exec sleep 2 ;;\nesac\nprintf '{"containerId":"container-id","remoteWorkspaceFolder":"/workspace","remoteUser":"dev"}'\n`,
+    { mode: 0o755 },
   );
+  process.env.PATH = `${dir}${path.delimiter}${oldPath || ""}`;
+  process.env.WTDC_SHARE_HERDR_BIN = "0";
+
+  try {
+    process.env.WTDC_TEST_DEVCONTAINER_MODE = "fail";
+    assert.throws(
+      () => up(dir, "merged.json", {}),
+      (err) => err.code === 23,
+    );
+
+    process.env.WTDC_TEST_DEVCONTAINER_MODE = "slow";
+    assert.throws(
+      () => up(dir, "merged.json", { WTDC_BUILD_TIMEOUT: "0.05" }),
+      (err) => err.name === "CommandError" && err.code === null && /failed/.test(err.message),
+    );
+
+    process.env.WTDC_TEST_DEVCONTAINER_MODE = "success";
+    let callbackId = "";
+    const result = up(dir, "merged.json", {}, (id) => {
+      callbackId = id;
+    });
+    assert.equal(result.containerId, "container-id");
+    assert.equal(callbackId, "container-id");
+    assert.equal(result.containerWorkspace, "/workspace");
+    assert.equal(result.remoteUser, "dev");
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
+    if (oldShare === undefined) delete process.env.WTDC_SHARE_HERDR_BIN;
+    else process.env.WTDC_SHARE_HERDR_BIN = oldShare;
+    if (oldMode === undefined) delete process.env.WTDC_TEST_DEVCONTAINER_MODE;
+    else process.env.WTDC_TEST_DEVCONTAINER_MODE = oldMode;
+  }
 });
 
 test("buildMerged: the checkout is never written to", () => {
@@ -412,7 +467,8 @@ test("planProvision: describes the build without doing it", async () => {
   assert.equal(plan.buildsImage, true, "a feature is what makes the CLI derive an image");
   assert.deepEqual(plan.keptFeatures, ["ghcr.io/devcontainers/features/node:1"]);
   assert.deepEqual(plan.droppedFeatures, []);
-  assert.match(plan.merged.postCreateCommand, /^echo hi && id -un > \/tmp\/wtdc-user$/);
+  assert.equal(plan.merged.postCreateCommand, "echo hi");
+  assert.equal(plan.merged.waitFor, "postCreateCommand");
 
   // And it wrote nothing: the merged config is only ever written by buildMerged.
   assert.deepEqual(fs.readdirSync(dir), ["devcontainer.json"]);

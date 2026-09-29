@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 // Scratch directories, removed when the file finishes. See the note in unit.test.mjs:
 // these are created per test, so leaving them behind is hundreds of directories a day.
@@ -25,6 +26,25 @@ test.after(() => {
 });
 
 const stripAnsi = (text) => String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+test("dispatcher runs when invoked through a symlink", () => {
+  const dir = tmp();
+  const dispatcher = path.join(dir, "shell.mjs");
+  const realShell = path.join(dir, "real-shell");
+  fs.symlinkSync(path.resolve(import.meta.dirname, "../lib/wtdc/shell.mjs"), dispatcher);
+  fs.writeFileSync(realShell, "#!/bin/sh\nprintf dispatched", { mode: 0o755 });
+
+  const result = spawnSync(process.execPath, [dispatcher], {
+    env: {
+      ...process.env,
+      WTDC_STATE_FILE: path.join(dir, "missing-state.json"),
+      WTDC_REAL_SHELL: realShell,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "dispatched");
+});
 
 // A stub `docker` on PATH answers `ps -q` with a running container and
 // resolves a passwd home, which is all planExec asks of it. The values are
@@ -67,13 +87,14 @@ test("planExec: redirects a pane in a provisioned worktree into the container", 
   assert.ok(plan.args, "expected a docker exec plan");
   assert.deepEqual(plan.args.slice(0, 5), ["exec", "-it", "-u", "node", "-e"]);
   assert.match(plan.args[5], /^HOME=/, "HOME must be supplied or a login shell breaks");
-  assert.equal(plan.args[6], "-w");
+  assert.deepEqual(plan.args.slice(6, 8), ["-e", "WTDC_IN_CONTAINER=1"]);
+  assert.equal(plan.args[8], "-w");
   assert.equal(
-    plan.args[7],
+    plan.args[9],
     "/workspaces/feat",
     "the worktree root maps to the container workspace",
   );
-  assert.equal(plan.args[8], "cafe1234");
+  assert.equal(plan.args[10], "cafe1234");
 });
 
 test("planExec: translates a subdirectory into the container path", async () => {
@@ -82,7 +103,7 @@ test("planExec: translates a subdirectory into the container path", async () => 
 
   const plan = planExec(entry(), "/w/feat/src/deep");
   assert.equal(plan.workdir, "/workspaces/feat/src/deep");
-  assert.equal(plan.args[7], "/workspaces/feat/src/deep");
+  assert.equal(plan.args[9], "/workspaces/feat/src/deep");
 });
 
 test("planExec: an entry with no container is not redirected", async () => {
@@ -107,7 +128,7 @@ test("planExec: omits -u and -w when the container has no user or workspace", as
   const { planExec } = await import("../lib/wtdc/shell.mjs");
 
   const plan = planExec(entry({ remote_user: "", container_workspace: "" }), "/w/feat");
-  assert.deepEqual(plan.args.slice(0, 2), ["exec", "-it"]);
+  assert.deepEqual(plan.args.slice(0, 4), ["exec", "-it", "-e", "WTDC_IN_CONTAINER=1"]);
   assert.ok(!plan.args.includes("-u"), "no user means no -u");
   assert.ok(!plan.args.includes("-w"), "no workspace means no -w, rather than an empty -w");
 });

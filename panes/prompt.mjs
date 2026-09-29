@@ -301,10 +301,28 @@ let answered = false;
 function ask() {
   return new Promise((resolve) => {
     let buffer = "";
+    let escapeTimer = null;
+
+    const isEscapePrefix = (value) =>
+      value === "\x1b" || value === "\x1b[" || /^\x1b\[[0-9;]+$/.test(value) || value === "\x1bO";
+
+    const revertOrDecline = () => {
+      if (focus === FOCUS_IMAGE && imageDirty) {
+        imageBuf = (plan && plan.image) || "";
+        imageCaret = imageBuf.length;
+        imageDirty = false;
+        image = null;
+        refreshImageLater();
+        render(toggle);
+      } else {
+        finish(false);
+      }
+    };
 
     const finish = (answer) => {
       answered = true;
       clearTimeout(imageCheckTimer);
+      clearTimeout(escapeTimer);
       process.stdin.setRawMode(false);
       process.stdin.pause();
       process.stdout.write("\x1b[?25h");
@@ -391,26 +409,31 @@ function ask() {
         if (ch === "\x1b") {
           const match = /^\x1b(\[[0-9;]*[A-Za-z~]|O[A-Za-z])/.exec(buffer);
           if (match) {
+            clearTimeout(escapeTimer);
+            escapeTimer = null;
             buffer = buffer.slice(match[0].length);
             if (!handleEscape(match[0])) return;
             continue;
           }
-          // ESC with nothing after it: a real Esc keypress, bounded by the
-          // fact that a terminal sends a sequence in one burst.
-          buffer = buffer.slice(1);
-          // On the image field, Esc puts back what the config said — a way to
-          // try something and change your mind without losing the question.
-          if (focus === FOCUS_IMAGE && imageDirty) {
-            imageBuf = (plan && plan.image) || "";
-            imageCaret = imageBuf.length;
-            imageDirty = false;
-            image = null;
-            refreshImageLater();
-            render(toggle);
+          // Terminal escape sequences can be split across data events. Wait briefly
+          // for the rest before treating ESC as the user's decline/revert key.
+          if (isEscapePrefix(buffer)) {
+            if (!escapeTimer) {
+              escapeTimer = setTimeout(() => {
+                escapeTimer = null;
+                if (!buffer.startsWith("\x1b")) return;
+                buffer = buffer.slice(1);
+                revertOrDecline();
+                if (!answered) onData(Buffer.alloc(0));
+              }, 50);
+              escapeTimer.unref?.();
+            }
             return;
           }
-          finish(false);
-          return;
+          buffer = buffer.slice(1);
+          revertOrDecline();
+          if (answered) return;
+          continue;
         }
 
         buffer = buffer.slice(1);

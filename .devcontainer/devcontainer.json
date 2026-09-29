@@ -14,33 +14,14 @@
 
   "remoteUser": "dev",
 
-  // btop, borrowed from the host rather than installed a second time in every worktree.
-  //
-  // Three things about this line, all of them learned by getting them wrong first.
-  //
-  // The *string* form of `mounts`, not the object form the spec documents first. The CLI
-  // rewrites the object form down to `type`, `src` and `dst` and drops `readonly` without
-  // a word — and the container user has the same uid as the host user, so without it this
-  // line would hand every process in the container write access to a host binary.
-  //
-  // The *file*, not `/usr/bin`. A mount replaces the directory it targets rather than
-  // adding to it, so `source=/usr/bin,target=/usr/bin` would take the image's own
-  // /usr/local/bin content with it — including the plugin's herdr, which lives there.
-  // Mounting the one file into /usr/local/bin, which is already on PATH and has no btop in
-  // it, shadows nothing and has to be run by no special path.
-  //
-  // It only works at all because host and image agree: btop is dynamically linked, so it
-  // needs the libstdc++ it was built against, and this holds because the host is Ubuntu
-  // 24.04 on aarch64 and so is the image. A static binary like lazygit needs none of that;
-  // a binary needing a library the image lacks would be in the container and refuse to run.
-  // Add a line here per tool — there is nothing else to configure.
+  // Borrow host tools as individual read-only files. Use localEnv for host paths;
+  // Docker does not expand a literal ~ in a mount source.
   "mounts": [
     // "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly"
-    // "type=bind,source=/home/tmih06/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly"
+    "type=bind,source=${localEnv:HOME}/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly",
+    "type=bind,source=${localEnv:HOME}/.local/bin/codex,target=/usr/local/bin/codex,readonly"
   ],
 
-  // Nothing else is needed, and nothing is added by the plugin beyond the readiness
-  // marker it appends to postCreateCommand. This file is also the proof that a user's
-  // own config stays authoritative: no features, no published ports, no injected users.
+  // The plugin waits for this command through the Dev Container CLI's waitFor setting.
   "postCreateCommand": "echo 'worktree-devcontainer dev container ready'"
 }
