@@ -85,6 +85,28 @@ That description comes from the same function provisioning uses, so it cannot
 drift from what actually runs. `Features` names what a template would drop, and
 `Setup` distinguishes a `docker run` from a per-worktree image build.
 
+**The image is editable, and the question is still answerable with one key.** The
+field starts holding whatever `devcontainer.json` says, and `↑`/`↓` move between
+it and the answer. Focus starts on the answer, so `y`, `Enter` and `space` work
+the instant the dialog opens; only once you are on the image does a letter type
+into it, which is the only way an image reference containing `n` or `y` can be
+typed at all.
+
+| | |
+|---|---|
+| `↑` `↓` | move between the image and the answer |
+| `y` `Enter` | yes — from the answer; leaves the field, from the image |
+| `n` `Esc` `q` | no — or, in the field, put the config's image back |
+| `space` | toggle the checkbox |
+| `←` `→` `Backspace` `Ctrl-U` | caret, delete, clear the image field |
+
+The check waits for you to stop typing — one second of quiet — so a check per
+keystroke cannot turn a word into a queue of registry lookups, and a lookup that
+comes back for an image you have already replaced is thrown away rather than
+shown. What you type is what gets built: the override travels with the build and
+replaces the image *only*, so unlike a template it leaves the config's `features`
+in place. Leave the field alone and the config's own image is used.
+
 Answer yes and a setup screen opens zoomed over that worktree's pane, with a
 progress bar through each stage. It holds the keyboard until the container is
 ready, and `Esc` cancels. The plugin notifies you with a sound when it finishes,
@@ -107,6 +129,14 @@ Afterwards, **every** terminal, split, tab, and agent you open in that worktree
 runs inside its container — that is what the dispatcher is for. Split panes,
 layouts, and agent lifecycle all behave normally, because they are ordinary Herdr
 features; only the shell they spawn is different.
+
+The worktree's own row in the sidebar gets a 🐳 in front of its name while the
+container is there, so a glance is enough to tell which worktrees are in one.
+The mark has no expiry: it is true for as long as the container exists, and
+`teardown` is what takes it off. It used to carry a ten-minute TTL, which meant
+the whale appeared when the build finished and then quietly disappeared while
+nothing had happened — a marker that lies about a running container is worse than
+no marker. Set `WTDC_CONTAINER_ICON` to change it, or to `''` to switch it off.
 
 Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
@@ -240,7 +270,7 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_KEEP_CONTAINER` | `0` | keep the container when the worktree is removed |
 | `WTDC_OPEN_CONTAINER_PANE` | `1` | open a container tab when the build finishes |
 | `WTDC_HOSTNAME` | `branch` | container hostname: `branch`, `off`, or a literal |
-| `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label |
+| `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label, for as long as its container exists |
 | `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
 | `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
 | `WTDC_TEMPLATE` / `WTDC_IMAGE` | *(blank)* | run a prebuilt image instead of the one your config declares |

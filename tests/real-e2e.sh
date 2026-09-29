@@ -32,7 +32,26 @@ cleanup() {
   for ws in ${BOOT_WS:-} ${HOST_WS:-}; do
     herdr workspace close "$ws" >/dev/null 2>&1
   done
+
+  # Sweep by label, not by the id in the state file. This script provisions twice — once
+  # directly, once through the setup screen — and `devcontainer up --remove-existing`
+  # replaces the container by a name it remembers, so the id the state file holds is only
+  # the latest of several. Removing that one left the rest behind, and a test that leaves a
+  # 300MB container behind on every run is a test nobody runs twice. The label is the
+  # worktree path, so this cannot reach a container that is not this run's.
+  for id in $(docker ps -aq --filter "label=devcontainer.local_folder=$WT" 2>/dev/null); do
+    docker rm -f "$id" >/dev/null 2>&1
+  done
   [ -n "${CONTAINER_ID:-}" ] && docker rm -f "$CONTAINER_ID" >/dev/null 2>&1
+
+  # The CLI builds a `vsc-…-uid` copy of the image when the host's uid differs from the
+  # image's, and never removes it. Only the ones that appeared during this run go, so a
+  # container that was already here is left alone.
+  for img in $(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null); do
+    case "$img" in vsc-*) ;; *) continue ;; esac
+    grep -qxF "$img" "${UID_IMAGES:-/dev/null}" 2>/dev/null || docker rmi -f "$img" >/dev/null 2>&1
+  done
+
   [ -n "${WT:-}" ] && git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
   rm -rf "$SANDBOX"
 }
@@ -43,21 +62,31 @@ for tool in docker devcontainer git herdr node; do
 done
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required to drive the PTY; skipping"; exit 0; }
 
+# The uid-remapped images that already exist, so cleanup can tell the ones this run is
+# about to create from the ones that were here before it.
+UID_IMAGES="$SANDBOX/uid-images.before"
+docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep '^vsc-' >"$UID_IMAGES"
+export UID_IMAGES
+
 # --------------------------------------------------------------- fixtures
 
 REPO="$SANDBOX/repo"
 mkdir -p "$REPO/.devcontainer"
-# The image here is only a fallback: the plugin runs a prebuilt template by default, and
-# sets a non-root remoteUser for it. So postCreateCommand has to be something an
-# unprivileged user can run — an `apt-get install` in here cannot work, and the test fails
-# for a reason that has nothing to do with what it is testing. `git --version` is enough:
-# the checks below are about git *working*, in a container whose workspace is a linked
-# worktree, not about git being installed.
+# The image has to have git in it, and a non-root user who can write to the bind mount:
+# the checks below are about git *working* in a container whose workspace is a linked
+# worktree, and about a terminal landing somewhere unprivileged. `debian:bookworm-slim` is
+# neither — it has no git, so the fixture has to name the image it needs rather than
+# inherit whatever happens to be configured. This is one of the plugin's own published
+# images, so the test also covers the fast path a real repo gets.
+#
+# Note it declares no `features`, which is what makes this a `docker run` and not a
+# per-workspace image build — the thing the templates exist to avoid.
 cat >"$REPO/.devcontainer/devcontainer.json" <<'JSON'
 {
   // minimal fixture: the plugin must not need to inject anything here
   "name": "real",
-  "image": "debian:bookworm-slim",
+  "image": "ghcr.io/tmih06/herdr-devcontainer-base:latest",
+  "remoteUser": "dev",
   "postCreateCommand": "git --version"
 }
 JSON
@@ -103,7 +132,15 @@ check 'the host workspace is still open' 'yes' \
 check 'no SSH machine was created' '0' \
   "$(herdr machine list --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const m=JSON.parse(s);const a=Array.isArray(m)?m:(m.machines||m.profiles||[]);console.log(a.filter(x=>/devc|real/.test(x.label||"")).length)}catch{console.log(0)}})')"
 check 'the worktree is marked in the sidebar' 'yes' \
-  "$(herdr workspace get "$HOST_WS" 2>/dev/null | grep -q '"name"' && echo yes || echo no)"
+  "$(herdr workspace get "$HOST_WS" 2>/dev/null | node -e '
+    let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+      try {
+        const w = JSON.parse(s).result.workspace;
+        // The exact mark, not "some field called name is present": this is the one thing
+        // that makes a containerised worktree recognisable in the sidebar.
+        const t = (w.tokens || {}).name || "";
+        process.stdout.write(t.includes("real") ? "yes" : "no (" + t + ")");
+      } catch { process.stdout.write("no (unreadable)"); } })')"
 
 note "git works inside the container"
 check 'the container is named after its branch' 'real' \
@@ -197,9 +234,12 @@ else
       2>/dev/null |
     node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).result.plugin_pane.pane.pane_id)}catch{}})')"
 
-  # A build is minutes on a cold image, so this waits rather than assuming.
+  # Wait for the handover, not for the setup screen to appear: its title is on the pane
+  # before the build has done anything, so waiting for that meant sending git into a pane
+  # that was still building, and reading back the answer to a question that had not been
+  # asked yet. The handover line is the moment this pane stops being a setup screen.
   for _ in $(seq 1 300); do
-    herdr pane read "$BOOT_TARGET" 2>/dev/null | grep -q 'dev container' && break
+    herdr pane read "$BOOT_TARGET" 2>/dev/null | grep -q 'Connected with docker exec' && break
     sleep 2
   done
 
@@ -208,7 +248,7 @@ else
   check 'the worktree workspace still has a pane' 'yes' \
     "$(herdr pane list --workspace "$BOOT_WS" 2>/dev/null | grep -q pane_id && echo yes || echo no)"
   check 'the setup screen became the container terminal' 'yes' \
-    "$(herdr pane read "$BOOT_TARGET" 2>/dev/null | grep -q 'dev container' && echo yes || echo no)"
+    "$(herdr pane read "$BOOT_TARGET" 2>/dev/null | grep -q 'Connected with docker exec' && echo yes || echo no)"
   check 'the worktree is still on disk' 'yes' \
     "$([ -d "$WT/.git" ] || [ -f "$WT/.git" ] && echo yes || echo no)"
 

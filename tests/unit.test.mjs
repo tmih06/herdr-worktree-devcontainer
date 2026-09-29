@@ -413,6 +413,48 @@ test('planProvision: a template replaces the image and says which features it dr
   assert.equal(plan.remoteUser, 'dev');
 });
 
+test('planProvision: an image typed in the prompt wins, and keeps the features', async () => {
+  // A template replaces the image *and* drops the features, because that is what asking
+  // for a template means. Typing an image is not asking for a template: someone who
+  // swaps the base image still wants the features applied to it.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, `{
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+    "features": { "ghcr.io/devcontainers/features/node:1": {} }
+  }`);
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const saved = process.env.WTDC_OVERRIDE_IMAGE;
+  process.env.WTDC_OVERRIDE_IMAGE = 'ghcr.io/example/typed:1';
+  try {
+    // A template in the config as well, because that is the case that has to be right: the
+    // typed image wins, and nothing is dropped.
+    const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: 'base' }, dir);
+    assert.equal(plan.image, 'ghcr.io/example/typed:1', 'the typed image is what runs');
+    assert.equal(plan.imageSource, 'edited in the prompt');
+    assert.deepEqual(plan.keptFeatures, ['ghcr.io/devcontainers/features/node:1'], 'the features still apply');
+    assert.deepEqual(plan.droppedFeatures, [], 'and none of them are reported as dropped');
+    assert.equal(plan.buildsImage, true, 'which is what keeping them costs');
+  } finally {
+    if (saved === undefined) delete process.env.WTDC_OVERRIDE_IMAGE;
+    else process.env.WTDC_OVERRIDE_IMAGE = saved;
+  }
+});
+
+test('planProvision: an untouched field leaves the config\'s own image alone', async () => {
+  // The field is a placeholder, so the common case has to be indistinguishable from
+  // there being no field at all.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+  assert.equal(plan.image, 'debian:12');
+  assert.equal(plan.imageSource, 'devcontainer.json');
+});
+
 test('planProvision: the hostname it will set is the one it reports', async () => {
   const dir = tmp();
   const src = path.join(dir, 'devcontainer.json');

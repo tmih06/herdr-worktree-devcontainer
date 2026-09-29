@@ -122,7 +122,9 @@ if [ "$a1 $a2" = "workspace get" ]; then
   exit 0
 fi
 if [ "$a1 $a2" = "worktree list" ]; then
-  echo '{"result":{"worktrees":[{"path":"/workspaces/demo","open_workspace_id":"w1"}]}}'
+  # The path has to be the fixture's real one: a worktree is identified by its checkout
+  # path, so a stub answering with a made-up path looks like a worktree that is not there.
+  echo '{"result":{"worktrees":[{"path":"'"$WTDC_SANDBOX"'/worktrees/demo","open_workspace_id":"w9"}]}}'
   exit 0
 fi
 if [ "$a1 $a2" = "workspace list" ]; then
@@ -362,6 +364,24 @@ test('the boot screen zooms the worktree pane, not a tab of its own', () => {
   assert.match(recorded, /--env WTDC_TARGET_PANE=w9:p1/);
 });
 
+test('an image typed in the prompt reaches the pane that does the build', () => {
+  // The whole point of the field is that what is typed is what gets built, and the build
+  // happens in another process, in another pane, minutes later. A pane gets its environment
+  // only through --env, so an override that stayed in the prompt's own process would be a
+  // field that displays a choice and quietly ignores it.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p1'], { WTDC_OVERRIDE_IMAGE: 'ghcr.io/example/typed:1' });
+  assert.match(calls('herdr'), /--env WTDC_OVERRIDE_IMAGE=ghcr\.io\/example\/typed:1/);
+});
+
+test('an untouched image field sends no override at all', () => {
+  // The field is a placeholder showing what the config says, so the common case must
+  // behave exactly as if the field were not there: the config's own image is used.
+  reset();
+  wtdc(['boot-launch', WT_FRESH, 'w9', 'fresh', 'w9:p1']);
+  assert.doesNotMatch(calls('herdr'), /WTDC_OVERRIDE_IMAGE/);
+});
+
 test('boot-launch waits for the prompt overlay to close before opening', () => {
   // Opening the setup screen while the overlay is still up makes the overlay the
   // active pane, so an untargeted pane lands on the question itself.
@@ -529,6 +549,27 @@ test('install-shell prints the config line and does not edit config', () => {
   assert.match(res.stdout, /terminal/);
   assert.match(res.stdout, /default_shell/);
   assert.match(res.stdout, /shell\.mjs/);
+});
+
+test('a provisioned worktree is marked in the sidebar, and stays marked', () => {
+  // The marker is a TTL-less token. With a TTL it appeared when provisioning finished and
+  // quietly vanished ten minutes later, which reads as the container having been cleaned
+  // up when nothing had happened — worse than not marking it, because it is a lie with a
+  // short fuse rather than an absence.
+  reset();
+  wtdc(['provision', WT, 'w9', 'demo']);
+  const marked = calls('herdr');
+  assert.match(marked, /workspace report-metadata w9 .*--token name=\S+ demo/, 'the worktree row is marked');
+  assert.doesNotMatch(marked, /--ttl-ms/, 'and the mark does not expire on its own');
+});
+
+test('teardown takes the marker off again', () => {
+  // The mark claims there is a container. Once there is not, the row must stop claiming
+  // it, or the one signal the user has is pointing at nothing.
+  wtdc(['provision', WT, 'w9', 'demo']);
+  reset();
+  wtdc(['teardown', WT]);
+  assert.match(calls('herdr'), /workspace report-metadata .*--clear-token name/);
 });
 
 test('install-shell points Herdr at the dispatcher, keeps a backup, and reloads', () => {

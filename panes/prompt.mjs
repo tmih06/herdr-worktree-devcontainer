@@ -29,6 +29,7 @@ const imageInfoBin = path.join(pluginRoot, 'lib', 'wtdc', 'imageInfo.mjs');
 
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m',
+  reverse: '\x1b[7m',
 };
 
 const checkout = process.env.WTDC_CHECKOUT || '';
@@ -55,8 +56,54 @@ let configRel = found
 let plan = null;
 let image = null;
 
-/** Re-read the config and rebuild the plan. Never throws: a broken config is reported. */
+/** One line per fact, indented under its label, and never longer than it needs to be. */
+const rows = [];
+const row = (label, ...lines) => rows.push([label, lines.filter(Boolean)]);
+
+// ---------------------------------------------------------------- focus model
+//
+// Two things can be acted on: the answer, and the image. Focus starts on the answer, so
+// every key that has always worked here still works the instant the dialog opens — `y`,
+// Enter, space. Reaching the image is a deliberate move up, and only then does a letter
+// type into it. That ordering is the whole design: a dialog that swallowed `n` into a
+// text field would be a dialog that could not be declined.
+const FOCUS_ANSWER = 'answer';
+const FOCUS_IMAGE = 'image';
+let focus = FOCUS_ANSWER;
+
+let imageBuf = '';      // what the field holds
+let imageCaret = 0;     // where the caret is in it
+let imageDirty = false; // it differs from what the config declares
+
+/** The image that will actually be used, which is the field unless it was left alone. */
+const effectiveImage = () => (imageDirty ? imageBuf.trim() : (plan && plan.image) || '');
+
+// The image check costs a docker call and a registry round trip, so it waits for the typing
+// to stop. A second of quiet is the difference between "the dialog reacted" and "the dialog
+// is thrashing" — a lookup per keystroke would be a dozen container pulls behind a word.
+const IMAGE_SETTLE_MS = 1000;
+let imageCheckTimer = null;
+
+/** Note an edit, and arrange for the image it now names to be described. */
+function markEdited() {
+  imageDirty = imageBuf !== ((plan && plan.image) || '');
+  image = null;               // the description belonged to the old image
+  if (imageCheckTimer) clearTimeout(imageCheckTimer);
+  imageCheckTimer = setTimeout(() => {
+    imageCheckTimer = null;
+    refreshImageLater();
+  }, IMAGE_SETTLE_MS);
+  imageCheckTimer.unref?.();
+}
+
+/** Re-read the config, and reset the field to whatever it now says. Never throws. */
 function replan() {
+  // Hold on to what was typed. The config is watched so the dialog can follow an edit made
+  // in another window, and that must not delete the answer being typed in this one — the
+  // person watching the dialog is not the person editing the file.
+  const typed = imageBuf;
+  const wasDirty = imageDirty;
+
   found = findConfig(checkout, config.WTDC_CONFIG_CANDIDATES);
   configRel = found
     ? path.relative(checkout, found)
@@ -71,14 +118,17 @@ function replan() {
       plan = { error: err.message };
     }
   }
+
+  const declared = (plan && plan.image) || '';
+  imageBuf = wasDirty ? typed : declared;
+  imageCaret = imageBuf.length;
+  imageDirty = imageBuf !== declared;
+  image = null;
+  if (imageDirty) markEdited();
   return plan;
 }
 
 replan();
-
-/** One line per fact, indented under its label, and never longer than it needs to be. */
-const rows = [];
-const row = (label, ...lines) => rows.push([label, lines.filter(Boolean)]);
 
 function imageLines() {
   if (!image) return [`${C.dim}checking…${C.reset}`];
@@ -95,16 +145,28 @@ function imageLines() {
   }
 }
 
+/** The image field, with a caret in it while it has focus. */
+function imageField() {
+  if (focus !== FOCUS_IMAGE) return imageBuf || `${C.yellow}none declared${C.reset}`;
+  const at = Math.max(0, Math.min(imageCaret, imageBuf.length));
+  const caret = `${C.reverse} ${C.reset}`;
+  return `${imageBuf.slice(0, at)}${caret}${imageBuf.slice(at)}`;
+}
+
 function render(toggle) {
   if (plan && !plan.error) {
     rows.length = 0;
     row('Worktree', label, `${C.dim}${checkout}${C.reset}`);
     row('Config', configRel, `${C.dim}repo ${repo || 'unknown'}${C.reset}`);
 
-    const source = plan.imageSource === 'devcontainer.json'
-      ? ''
-      : `  ${C.dim}from ${plan.imageSource}${C.reset}`;
-    row('Image', `${plan.image || `${C.yellow}none declared${C.reset}`}${source}`, ...imageLines());
+    // Where the image on screen came from. An edit in this dialog is the one source the
+    // config file cannot show, so it is named rather than left to be inferred from a caret.
+    const source = imageDirty
+      ? `  ${C.yellow}edited in this dialog${C.reset}`
+      : plan.imageSource === 'devcontainer.json'
+        ? ''
+        : `  ${C.dim}from ${plan.imageSource}${C.reset}`;
+    row('Image', `${imageField()}${source}`, ...imageLines());
 
     const features = [];
     if (plan.keptFeatures.length) {
@@ -136,17 +198,27 @@ function render(toggle) {
     return head + lines[0] + lines.slice(1).map((x) => `\n${' '.repeat(width + 4)}${x}`).join('');
   }).join('\n');
 
+  // The answer is a focusable item too, and it is where focus starts — so the keys that
+  // have always answered this question still answer it without a move.
+  const pointer = (on) => (on ? `${C.cyan}❯${C.reset}` : ' ');
+  const answerLine = `${pointer(focus === FOCUS_ANSWER)} ${C.green}[${toggle}]${C.reset} `
+    + 'Create a dev container for this worktree';
+
+  const keys = focus === FOCUS_IMAGE
+    ? `${C.dim}type to edit    ⏎ done    esc revert    ↑↓ move${C.reset}`
+    : `${C.dim}y/⏎ yes    n/esc/q no    space toggle    ↑↓ to the image${C.reset}`;
+
   process.stdout.write(`\x1b[2J\x1b[H
 ${C.cyan}  Dev container${C.reset}
 
 ${body}
 
+  ${answerLine}
+
   Opens a container-backed terminal in this worktree. Every terminal you open
   here then runs inside the container.
 
-  ${C.green}[${toggle}]${C.reset} Create a dev container for this worktree
-
-  ${C.dim}y/Enter yes    n/Esc/q no    space toggle${C.reset}
+  ${keys}
 
 `);
 }
@@ -165,11 +237,68 @@ function ask() {
 
     const finish = (answer) => {
       answered = true;
+      clearTimeout(imageCheckTimer);
       process.stdin.setRawMode(false);
       process.stdin.pause();
       process.stdout.write('\x1b[?25h');
       resolve(answer);
     };
+
+    /** Up, down, left, right, home, end. The whole vocabulary of the two fields. */
+    function handleEscape(seq) {
+      const last = seq[seq.length - 1];
+      if (last === 'A' || last === 'B') {                 // up / down
+        focus = focus === FOCUS_ANSWER ? FOCUS_IMAGE : FOCUS_ANSWER;
+        if (focus === FOCUS_IMAGE) refreshImageLater();
+        render(toggle);
+        return true;
+      }
+      if (focus !== FOCUS_IMAGE) return false;
+      if (last === 'C' && imageCaret < imageBuf.length) imageCaret += 1;   // right
+      if (last === 'D' && imageCaret > 0) imageCaret -= 1;                  // left
+      if (last === 'H') imageCaret = 0;                                     // home
+      if (last === 'F') imageCaret = imageBuf.length;                       // end
+      render(toggle);
+      return true;
+    }
+
+    /** Returns true when the key ended the question. */
+    function handleKey(ch) {
+      if (ch === '\t') {                       // tab moves like the arrows do
+        focus = focus === FOCUS_ANSWER ? FOCUS_IMAGE : FOCUS_ANSWER;
+        if (focus === FOCUS_IMAGE) refreshImageLater();
+        return false;
+      }
+
+      if (focus === FOCUS_IMAGE) {
+        // In the field, a letter is a letter. `y` and `n` are ordinary characters
+        // here, which is the only way an image reference can be typed at all.
+        if (ch === '\r' || ch === '\n') { focus = FOCUS_ANSWER; render(toggle); return false; }
+        if (ch === '\x7f' || ch === '\b') {
+          if (imageCaret > 0) {
+            imageBuf = imageBuf.slice(0, imageCaret - 1) + imageBuf.slice(imageCaret);
+            imageCaret -= 1;
+          }
+        } else if (ch === '\x15') {                          // ctrl-u: clear the field
+          imageBuf = '';
+          imageCaret = 0;
+        } else if (ch >= ' ') {
+          imageBuf = imageBuf.slice(0, imageCaret) + ch + imageBuf.slice(imageCaret);
+          imageCaret += 1;
+        } else {
+          return false;
+        }
+        markEdited();
+        render(toggle);
+        return false;
+      }
+
+      if (ch === '\r' || ch === '\n') return finish(true);
+      if (ch === 'y' || ch === 'Y') return finish(true);
+      if (ch === 'n' || ch === 'N' || ch === 'q' || ch === 'Q') return finish(false);
+      if (ch === ' ') toggle = toggle === ' ' ? 'x' : ' ';
+      return false;
+    }
 
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -189,22 +318,29 @@ function ask() {
           const match = /^\x1b(\[[0-9;]*[A-Za-z~]|O[A-Za-z])/.exec(buffer);
           if (match) {
             buffer = buffer.slice(match[0].length);
+            if (!handleEscape(match[0])) return;
             continue;
           }
           // ESC with nothing after it: a real Esc keypress, bounded by the
           // fact that a terminal sends a sequence in one burst.
           buffer = buffer.slice(1);
+          // On the image field, Esc puts back what the config said — a way to
+          // try something and change your mind without losing the question.
+          if (focus === FOCUS_IMAGE && imageDirty) {
+            imageBuf = (plan && plan.image) || '';
+            imageCaret = imageBuf.length;
+            imageDirty = false;
+            image = null;
+            refreshImageLater();
+            render(toggle);
+            return;
+          }
           finish(false);
           return;
         }
 
         buffer = buffer.slice(1);
-        if (ch === '\r' || ch === '\n') return finish(true);
-        if (ch === 'y' || ch === 'Y') return finish(true);
-        if (ch === 'n' || ch === 'N' || ch === 'q' || ch === 'Q') return finish(false);
-        if (ch === ' ') {
-          toggle = toggle === ' ' ? 'x' : ' ';
-        }
+        if (handleKey(ch)) return;
         // Anything else is ignored, so a stray key never dismisses the prompt.
         render(toggle);
       }
@@ -241,7 +377,7 @@ const answer = ask();
  * process, the prompt stays live and the answer arrives whenever it arrives.
  */
 function refreshImageLater() {
-  const ref = plan && plan.image;
+  const ref = effectiveImage();
   if (!ref) {
     image = null;
     return;
@@ -256,7 +392,11 @@ function refreshImageLater() {
     try {
       described = JSON.parse(out);
     } catch { /* left as "checking…" */ }
-    if (!described || described.ref !== ref) return;
+    if (!described) return;
+    // Against the image the field holds *now*, not the one this lookup was started for.
+    // A slow answer for the previous image lands after the user has typed a new one, and
+    // honouring it would describe an image that is no longer on screen.
+    if (described.ref !== effectiveImage()) return;
     if (described.state === image?.state && described.size === image?.size) return;
     image = described;
     render(toggle);
@@ -328,6 +468,13 @@ watcher.unref();
 const accepted = await answer;
 clearInterval(watcher);
 if (!accepted) process.exit(0);
+
+// An image typed into the field is what gets built, so it has to travel with the build.
+// Environment only, and only when the field was actually changed: left alone, the config's
+// own image is used, which is the whole point of the field being a placeholder.
+if (imageDirty && imageBuf.trim()) {
+  process.env.WTDC_OVERRIDE_IMAGE = imageBuf.trim();
+}
 
 process.stdout.write(`starting dev container for ${label}\n\n`);
 

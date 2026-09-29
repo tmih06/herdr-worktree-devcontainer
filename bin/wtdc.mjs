@@ -76,6 +76,23 @@ function requireConfig(checkout, config) {
 
 // ------------------------------------------------------------------ provision
 
+/**
+ * Put the container marker in front of a worktree's name, or take it away.
+ *
+ * This is the one thing that makes a containerised worktree recognisable in the sidebar
+ * without spending a machine node on it. `on` false clears the token, so a worktree whose
+ * container has been destroyed stops claiming to have one — the mark is only worth showing
+ * while it is true.
+ */
+function markContainerised(workspaceId, label, config, on = true) {
+  const icon = config.WTDC_CONTAINER_ICON || '';
+  if (!workspaceId) return false;
+  if (!icon) return false;
+  return on
+    ? herdr.reportWorkspaceToken(workspaceId, 'name', `${icon} ${label}`)
+    : herdr.clearWorkspaceToken(workspaceId, 'name');
+}
+
 function provisionFailed() {
   const checkout = process.env.WTDC_PROVISION_CHECKOUT;
   const label = process.env.WTDC_PROVISION_LABEL || 'worktree';
@@ -178,10 +195,7 @@ function provision(checkout, workspaceId = '', labelArg = '') {
   // The worktree stays a local Herdr worktree; the container is reached through
   // the shell dispatcher. Mark the row so the sidebar shows which worktrees are
   // containerised, without occupying a machine node.
-  const icon = config.WTDC_CONTAINER_ICON || '';
-  if (workspaceId && icon) {
-    herdr.reportWorkspaceToken(workspaceId, 'name', `${icon} ${label}`);
-  }
+  markContainerised(workspaceId, label, config);
 
   info('');
   ok(`${label} is running in a dev container`);
@@ -239,6 +253,13 @@ function teardown(checkout, force = false) {
       fs.rmSync(path.dirname(entry.merged_config), { recursive: true, force: true });
     } catch { /* already gone */ }
   }
+
+  // Take the marker off, unless the container was deliberately kept — in which case it is
+  // still there, and the row should still say so.
+  if (config.WTDC_KEEP_CONTAINER !== '1' || force) {
+    markContainerised(herdr.workspaceIdFor(entry.checkout_path), entry.label || path.basename(entry.checkout_path), config, false);
+  }
+
   state.del(checkout);
   ok('torn down');
 }
@@ -462,6 +483,11 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
     warn('the worktree has no pane left to show the setup screen in; it will open wherever you are');
   }
 
+  // An image typed into the prompt travels with the build, so the setup screen has to be
+  // told. Environment only and only when one was given, so the config's own image is used
+  // whenever the field was left as a placeholder.
+  const override = (process.env.WTDC_OVERRIDE_IMAGE || '').trim();
+
   herdr.openPluginPane('boot', {
     placement: 'zoomed',
     workspace: workspaceId || undefined,
@@ -475,6 +501,7 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
       WTDC_LABEL: label,
       WTDC_WORKSPACE: workspaceId,
       WTDC_TARGET_PANE: pane,
+      ...(override ? { WTDC_OVERRIDE_IMAGE: override } : {}),
     },
   });
 }

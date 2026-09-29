@@ -190,6 +190,83 @@ check 'it asked for the setup screen by name' 'yes' \
 # wrong answer — and editing devcontainer.json while the question is open is the ordinary
 # way to find out what a change does. So the dialog has to notice the file changing.
 # Driven by editing the file from a second process while the prompt sits there.
+printf 'the image field\n'
+# Focus starts on the answer, so the keys that answer it still work immediately, and
+# reaching the image is a deliberate move up. Getting this backwards would mean a dialog
+# that cannot be declined, because `n` would type into a text field.
+field="$(python3 - <<'PY'
+import os, pty, re, select, time
+
+PLUGIN_ROOT = os.environ["WTDC_PLUGIN_ROOT"]
+base = "/tmp/wtdc-prompt-test"
+
+env = dict(os.environ)
+env.update({
+    "HERDR_PLUGIN_ROOT": PLUGIN_ROOT,
+    "HERDR_PLUGIN_ID": "worktree-devcontainer",
+    "HERDR_PLUGIN_STATE_DIR": base + "/state",
+    "HERDR_PLUGIN_CONFIG_DIR": base + "/config",
+    "WTDC_CHECKOUT": base + "/wt",
+    "WTDC_WORKSPACE": "w1",
+    "WTDC_LABEL": "demo",
+    "WTDC_REPO": "repo",
+    "HERDR_BIN_PATH": base + "/bin/herdr",
+})
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("node", ["node", PLUGIN_ROOT + "/panes/prompt.mjs"], env)
+
+buf = b""
+def pump(sec):
+    global buf
+    end = time.time() + sec
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+
+def send(data, wait=0.4):
+    os.write(fd, data)
+    pump(wait)
+
+def frame():
+    text = re.sub(r"\x1b\[[0-9;]*m", "", buf.decode("utf-8", "replace"))
+    return text.split("\x1b[2J\x1b[H")[-1]
+
+pump(2.5)
+out = []
+out.append("answer-first" if "y/" in frame() and "Create a dev container" in frame() else "answer-lost")
+
+send(b"\x1b[A")                                   # up, onto the image
+out.append("edit-mode" if "type to edit" in frame() else "no-edit")
+
+send(b"\x15")                                     # ctrl-u clears the field
+out.append("cleared" if "debian:12" not in frame() else "not-cleared")
+
+send(b"example.invalid/x:1", wait=0.3)
+out.append("typed" if "example.invalid/x:1" in frame() else "not-typed")
+out.append("marked" if "edited in this dialog" in frame() else "not-marked")
+
+send(b"\x1b")                                     # esc puts the config's image back
+pump(1.0)
+out.append("reverted" if "debian:12" in frame() else "not-reverted")
+out.append("still-open" if "Create a dev container" in frame() else "dismissed")
+
+os.write(fd, b"n")
+time.sleep(0.3)
+print(" ".join(out))
+PY
+)"
+check 'the image field is reachable and editable' \
+  'answer-first edit-mode cleared typed marked reverted still-open' "$field"
+
 printf 'the prompt follows the config it is describing\n'
 watch="$(python3 - <<'PY'
 import os, pty, re, select, time
@@ -248,6 +325,11 @@ print("fresh" if "edited:latest" in text else "stale")
 PY
 )"
 check 'the prompt re-reads a config that changed under it' 'fresh' "$watch"
+
+# The scratch directory is fixed rather than per-run so the three drivers above can share
+# one stub, which means nothing sweeps it up on its own. Left behind, it is a directory in
+# /tmp that belongs to a test that has finished.
+rm -rf "$BASE"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then
