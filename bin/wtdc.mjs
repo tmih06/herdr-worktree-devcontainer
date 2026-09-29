@@ -411,6 +411,7 @@ function hookRemoved() {
   if (!checkout) return;
 
   if (state.has(checkout)) teardown(checkout);
+  if (config.WTDC_KEEP_CONTAINER === "1") return;
   // Sweep by Docker label, so a build that failed before state was written is
   // still cleaned up.
   const removed = dc.removeOrphans(checkout);

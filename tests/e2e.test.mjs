@@ -579,6 +579,18 @@ test("WTDC_KEEP_CONTAINER=1 leaves the container running", () => {
   assert.equal(state().entries[WT], undefined, "state is still dropped");
 });
 
+test("WTDC_KEEP_CONTAINER=1 also survives the worktree removal hook", () => {
+  wtdc(["provision", WT, "w9", "demo"]);
+  reset();
+  const res = wtdc(["hook-removed"], {
+    WTDC_KEEP_CONTAINER: "1",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify({ data: { worktree: { path: WT } } }),
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(state().entries[WT], undefined);
+  assert.doesNotMatch(calls("docker"), /rm -f/, "the orphan sweep must honor keep-container");
+});
+
 test("worktree.removed sweeps containers even with no state entry", () => {
   // A build that failed after `up` leaves a container nobody is tracking.
   const orphan = path.join(sandbox, "worktrees", "orphan");
