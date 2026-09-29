@@ -267,6 +267,71 @@ PY
 check 'the image field is reachable and editable' \
   'answer-first edit-mode cleared typed marked reverted still-open' "$field"
 
+printf 'the mounts a config declares are shown\n'
+mounts="$(python3 - <<'PY'
+import os, pty, re, select, time
+
+PLUGIN_ROOT = os.environ["WTDC_PLUGIN_ROOT"]
+base = "/tmp/wtdc-prompt-test"
+cfg = base + "/wt/.devcontainer/devcontainer.json"
+
+# Two forms, and the difference between them: a bind that is read-only and a bind that is
+# not. The second is the one that matters — it means anything in the container can change
+# a file of yours, because the container user has the same uid as you.
+open(cfg, "w").write("""{
+  "image": "debian:12",
+  "mounts": [
+    "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly",
+    { "type": "bind", "source": "/home/u/notes", "target": "/notes" }
+  ]
+}""")
+
+env = dict(os.environ)
+env.update({
+    "HERDR_PLUGIN_ROOT": PLUGIN_ROOT,
+    "HERDR_PLUGIN_ID": "worktree-devcontainer",
+    "HERDR_PLUGIN_STATE_DIR": base + "/state",
+    "HERDR_PLUGIN_CONFIG_DIR": base + "/config",
+    "WTDC_CHECKOUT": base + "/wt",
+    "WTDC_WORKSPACE": "w1",
+    "WTDC_LABEL": "demo",
+    "WTDC_REPO": "repo",
+    "HERDR_BIN_PATH": base + "/bin/herdr",
+})
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("node", ["node", PLUGIN_ROOT + "/panes/prompt.mjs"], env)
+
+buf = b""
+def pump(sec):
+    global buf
+    end = time.time() + sec
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+
+pump(2.5)
+text = re.sub(r"\x1b\[[0-9;]*m", "", buf.decode("utf-8", "replace")).split("\x1b[2J\x1b[H")[-1]
+out = []
+out.append("ro" if "btop" in text and "read-only" in text else "no-ro")
+out.append("wr" if "/notes" in text and "writable from inside" in text else "no-wr")
+out.append("target" if "/usr/local/bin/btop" in text else "no-target")
+os.write(fd, b"n")
+time.sleep(0.3)
+print(" ".join(out))
+PY
+)"
+check 'a read-only bind and a writable one are both named, and told apart' \
+  'ro wr target' "$mounts"
+
 printf 'the prompt follows the config it is describing\n'
 watch="$(python3 - <<'PY'
 import os, pty, re, select, time

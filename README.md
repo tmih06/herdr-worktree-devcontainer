@@ -70,6 +70,7 @@ that is not knowable from the config file alone:
   Image     ghcr.io/tmih06/herdr-devcontainer-node:latest
             not on this machine — will be pulled  138 MB
   Features  none
+  Mounts    /usr/bin/btop → /usr/local/bin/btop  read-only
   Setup     no image build from features — a docker run
             and a uid-matched copy of the image (~300 MB, tens of seconds)
             user dev
@@ -92,6 +93,14 @@ ones that declare no features and look exactly like a `docker run`. Saying "no
 image build" and then spending half a minute building an image is not a
 description of anything, so the line accounts for it. Where the image does not
 say which uid its user has, the line says so rather than guessing.
+
+`Mounts` names what the container will have of the host's, in the `mounts` array
+of your own config — the devcontainer-native way to borrow a host binary instead
+of installing it in every worktree, and the plugin has nothing to do with it. A
+bind that is **not** read-only is called out, because it means anything running
+in the container can change a file of yours: the container user has your uid, so
+nothing else stops it. Note that the devcontainer CLI drops `readonly` from the
+object form of a mount, so write the string form.
 
 **The image is editable, and the question is still answerable with one key.** The
 field starts holding whatever `devcontainer.json` says, and `↑`/`↓` move between

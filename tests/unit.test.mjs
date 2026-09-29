@@ -516,6 +516,48 @@ test('a provision is refused when the image on this machine cannot run here', as
   }
 });
 
+test('planProvision: the mounts a config declares are reported, in either form', async () => {
+  // The spec allows a mount as a string in docker's syntax or as an object, and the prompt
+  // has to describe what the container will have rather than what the file is shaped like.
+  // Read-only is the part worth getting right: a bind mount that is not read-only lets
+  // anything in the container change a file of yours, and the container user has your uid.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, `{
+    "image": "debian:12",
+    "mounts": [
+      "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly",
+      { "type": "bind", "source": "/home/u/notes", "target": "/notes" },
+      "source=/home/u/dots,target=/dotfiles,type=bind,readonly=true",
+      "type=volume,source=cache,target=/var/cache"
+    ]
+  }`);
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+
+  assert.equal(plan.mounts.length, 4, 'every mount, in both forms');
+  assert.deepEqual(
+    plan.mounts.map((m) => `${m.source || m.type}=${m.target}:${m.readonly}`),
+    [
+      '/usr/bin/btop=/usr/local/bin/btop:true',    // bare `readonly`
+      '/home/u/notes=/notes:false',                // object form, and writable
+      '/home/u/dots=/dotfiles:true',               // `readonly=true`, docker's other spelling
+      'cache=/var/cache:false',                    // a named volume, not a host file
+    ],
+  );
+});
+
+test('planProvision: a config with no mounts says so rather than showing nothing', async () => {
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  fs.writeFileSync(src, '{ "image": "debian:12" }');
+
+  const { planProvision } = await import('../lib/wtdc/devcontainer.mjs');
+  const plan = planProvision(src, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' }, dir);
+  assert.deepEqual(plan.mounts, []);
+});
+
 test('planProvision: the hostname it will set is the one it reports', async () => {
   const dir = tmp();
   const src = path.join(dir, 'devcontainer.json');

@@ -187,6 +187,29 @@ function render(toggle) {
     }
     row('Features', ...features);
 
+    // What the container will have of the host's. A bind mount is a host path made
+    // available inside, which is worth seeing named rather than inferred, and a mount that
+    // is *not* read-only means anything in the container can change a file of yours — the
+    // container user has the same uid you do, so nothing else stops it.
+    const mounts = [];
+    if (plan.mounts.length) {
+      for (const mount of plan.mounts) {
+        const from = mount.source || mount.type || 'mount';
+        // Writable is only worth flagging for a bind: that is a file of yours inside the
+        // container. A named volume is writable and holds nothing of yours.
+        const risky = !mount.readonly && (mount.type === 'bind' || !mount.type);
+        const how = mount.readonly
+          ? `${C.dim}read-only${C.reset}`
+          : risky
+            ? `${C.yellow}writable from inside${C.reset}`
+            : `${C.dim}writable${C.reset}`;
+        mounts.push(`${C.dim}${from}${C.reset} → ${mount.target || '?'}  ${how}`);
+      }
+    } else {
+      mounts.push(`${C.dim}none${C.reset}`);
+    }
+    row('Mounts', ...mounts);
+
     // What answering yes costs. The uid copy counts: it is a build the user did not ask
     // for, it happens on every provision whose image user is not their own uid, and a line
     // that says "a docker run" and then spends half a minute building an image is not a
