@@ -10,7 +10,7 @@
   // Multi-arch (linux/amd64 and linux/arm64) as of the image workflow's `platforms:`
   // line; see images/README.md.
   "name": "herdr-worktree-devcontainer",
-  "image": "ghcr.io/tmih06/herdr-devcontainer-python:latest",
+  "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest",
 
   "remoteUser": "dev",
 
