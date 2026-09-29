@@ -181,7 +181,16 @@ function wtdc(args, extraEnv = {}) {
 }
 
 const state = () => JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'state.json'), 'utf8'));
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-e2e-cfg-'));
+
+// Config files for the install tests, each in its own directory so a test can hand the
+// action a WTDC_CONFIG_FILE. Tracked and removed with the rest, for the same reason as
+// in unit.test.mjs.
+const scratch = [];
+const tmp = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-e2e-cfg-'));
+  scratch.push(dir);
+  return dir;
+};
 const calls = (tool) => {
   try {
     return fs.readFileSync(path.join(CALLS, tool), 'utf8');
@@ -638,4 +647,7 @@ test('closePane: a pane that is there gets closed, by id', () => {
   assert.match(calls('herdr'), /pane close w1:p1/);
 });
 
-test.after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+test.after(() => {
+  for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(sandbox, { recursive: true, force: true });
+});

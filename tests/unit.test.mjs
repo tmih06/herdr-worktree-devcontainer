@@ -18,7 +18,19 @@ import { parseEnvFile } from '../lib/wtdc/config.mjs';
 import { findByCwd, set, del, get, patch } from '../lib/wtdc/state.mjs';
 import { gitDirMount, buildMerged, branchHostname } from '../lib/wtdc/devcontainer.mjs';
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-test-'));
+// Scratch directories, removed when the file finishes. Without the cleanup every run
+// leaves one behind per test, which turns /tmp into a few hundred stale directories
+// after a day of work — and a leaked directory is indistinguishable from a real one
+// when something goes looking for its state.
+const scratch = [];
+const tmp = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-test-'));
+  scratch.push(dir);
+  return dir;
+};
+test.after(() => {
+  for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 // ------------------------------------------------------------------- jsonc
 

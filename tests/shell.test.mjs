@@ -12,7 +12,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-shell-'));
+// Scratch directories, removed when the file finishes. See the note in unit.test.mjs:
+// these are created per test, so leaving them behind is hundreds of directories a day.
+const scratch = [];
+const tmp = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wtdc-shell-'));
+  scratch.push(dir);
+  return dir;
+};
+test.after(() => {
+  for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 const stripAnsi = (text) => String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 
