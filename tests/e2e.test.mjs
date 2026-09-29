@@ -684,6 +684,34 @@ test("install-shell refuses a config it cannot edit safely, and exits non-zero",
   assert.equal(fs.readFileSync(configFile, "utf8"), original, "the file is left exactly as it was");
 });
 
+test("install-shell leaves an unreadable config path alone", () => {
+  const dir = tmp();
+  const configFile = path.join(dir, "config.toml");
+  fs.mkdirSync(configFile);
+  reset();
+
+  const res = wtdc(["install-shell"], { WTDC_CONFIG_FILE: configFile });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /could not read/);
+  assert.ok(fs.statSync(configFile).isDirectory());
+  assert.doesNotMatch(calls("herdr"), /server reload-config/);
+});
+
+test("install-shell does not change the config when its backup cannot be written", () => {
+  const dir = tmp();
+  const configFile = path.join(dir, "config.toml");
+  const original = '[terminal]\ndefault_shell = "/bin/sh"\n';
+  fs.writeFileSync(configFile, original);
+  fs.mkdirSync(`${configFile}.bak-before-wtdc`);
+  reset();
+
+  const res = wtdc(["install-shell"], { WTDC_CONFIG_FILE: configFile });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /could not back up/);
+  assert.equal(fs.readFileSync(configFile, "utf8"), original);
+  assert.doesNotMatch(calls("herdr"), /server reload-config/);
+});
+
 test("the worktree checkout is left pristine", () => {
   const out = execFileSync("git", ["-C", WT, "status", "--porcelain"], { encoding: "utf8" });
   assert.equal(out.trim(), "", `worktree should be clean, got: ${out}`);
