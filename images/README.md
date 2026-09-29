@@ -55,6 +55,9 @@ machine instead.
 # by template name, resolved through manifest.json
 export WTDC_TEMPLATE=node-bun
 
+# Node 24, latest Bun at build time, Docker CLI and Compose, Make, direnv
+export WTDC_TEMPLATE=node-bun-docker
+
 # or straight at an image
 export WTDC_IMAGE=ghcr.io/tmih06/herdr-devcontainer-base:latest
 ```
@@ -69,6 +72,22 @@ WTDC_IMAGE_REMOTE_USER=dev
 The plugin pulls the image once if it is not local, so the first provision of a
 template pays the pull and every one after that does not.
 
+`node-bun-docker` includes the Docker client and Compose plugin. To run Docker
+commands, connect it to a daemon. For a local Docker daemon, add this mount to
+your `devcontainer.json`:
+
+```json
+"mounts": ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
+```
+
+The `dev` user may need `sudo docker ...` if its group cannot access the host
+socket. Access to that socket also grants control over the host Docker daemon,
+so only mount it in containers you trust. The image does not start a daemon.
+Interactive Bash shells load direnv; run `direnv allow` in a project to approve
+its `.envrc`.
+`bun@latest` is resolved when GitHub Actions builds the image; rebuild it to
+pick up later Bun releases.
+
 Naming a template **replaces** the `image` in your own `devcontainer.json` and
 drops its `features`, which the plugin reports by name. `WTDC_TEMPLATE` is blank
 by default for exactly that reason: a repo's own config is what runs unless it
@@ -80,26 +99,28 @@ images itself, is on the fast path without any template configured.
 Sizes are the published `:latest` tags. Everything is inherited from `base`, so this
 table is what each one _adds_ — pick a row and you also get the first.
 
-|                                               | `base`                          | `node` | `node-bun` | `python` | `rust` |
-| --------------------------------------------- | ------------------------------- | ------ | ---------- | -------- | ------ |
-| **Size**                                      | 67 MB                           | 138 MB | pending    | 106 MB   | 360 MB |
-| **Base OS**                                   | Ubuntu 24.04                    | ←      | ←          | ←        | ←      |
-| **User**                                      | `dev`, uid 1000, NOPASSWD sudo  | ←      | ←          | ←        | ←      |
-| **Workdir**                                   | `/workspaces`, owned by `dev`   | ←      | ←          | ←        | ←      |
-| **herdr**                                     | 0.9.1 at `/usr/local/bin/herdr` | ←      | ←          | ←        | ←      |
-| git, curl, jq, ripgrep, less                  | ✅                              | ←      | ←          | ←        | ←      |
-| ca-certificates, tzdata                       | ✅                              | ←      | ←          | ←        | ←      |
-| **Node 24 LTS** + corepack                    | —                               | ✅     | ✅         | —        | —      |
-| **Bun**                                       | —                               | —      | ✅         | —        | —      |
-| **CPython 3** + venv + pip                    | —                               | —      | —          | ✅       | —      |
-| **`uv`**                                      | —                               | —      | —          | ✅       | —      |
-| **rustup** stable, minimal profile            | —                               | —      | —          | —        | ✅     |
-| `build-essential`, `pkg-config`, `libssl-dev` | —                               | —      | —          | —        | ✅     |
-| `RUSTUP_HOME`, `CARGO_HOME` on `PATH`         | —                               | —      | —          | —        | ✅     |
-| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv`    | —                               | —      | —          | ✅       | —      |
+|                                               | `base`                          | `node` | `node-bun` | `node-bun-docker` | `python` | `rust` |
+| --------------------------------------------- | ------------------------------- | ------ | ---------- | ----------------- | -------- | ------ |
+| **Size**                                      | 67 MB                           | 138 MB | pending    | pending           | 106 MB   | 360 MB |
+| **Base OS**                                   | Ubuntu 24.04                    | ←      | ←          | ←                 | ←        | ←      |
+| **User**                                      | `dev`, uid 1000, NOPASSWD sudo  | ←      | ←          | ←                 | ←        | ←      |
+| **Workdir**                                   | `/workspaces`, owned by `dev`   | ←      | ←          | ←                 | ←        | ←      |
+| **herdr**                                     | 0.9.1 at `/usr/local/bin/herdr` | ←      | ←          | ←                 | ←        | ←      |
+| git, curl, jq, ripgrep, less                  | ✅                              | ←      | ←          | ←                 | ←        | ←      |
+| ca-certificates, tzdata                       | ✅                              | ←      | ←          | ←                 | ←        | ←      |
+| **Node 24 LTS** + corepack                    | —                               | ✅     | ✅         | ✅                | —        | —      |
+| **Bun**                                       | —                               | —      | ✅         | ✅ latest         | —        | —      |
+| **Docker CLI + Compose + Buildx**             | —                               | —      | —          | ✅                | —        | —      |
+| **Make and direnv**                           | —                               | —      | —          | ✅                | —        | —      |
+| **CPython 3** + venv + pip                    | —                               | —      | —          | —                 | ✅       | —      |
+| **`uv`**                                      | —                               | —      | —          | —                 | ✅       | —      |
+| **rustup** stable, minimal profile            | —                               | —      | —          | —                 | —        | ✅     |
+| `build-essential`, `pkg-config`, `libssl-dev` | —                               | —      | —          | —                 | —        | ✅     |
+| `RUSTUP_HOME`, `CARGO_HOME` on `PATH`         | —                               | —      | —          | —                 | —        | ✅     |
+| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv`    | —                               | —      | —          | —                 | ✅       | —      |
 
 ← means inherited from `base`, not absent. ✓ means added by that image. The
-`node-bun` size is pending its first publish.
+`node-bun` and `node-bun-docker` sizes are pending a published measurement.
 
 Not in any of them, deliberately: **no compiler in `base`**, no language runtimes, no
 editors, and no editor at all. `build-essential` alone was ~250MB, which was most of why

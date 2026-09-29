@@ -219,13 +219,29 @@ jobs:
               echo "::error::$ref is not runnable on $platform"
               fail=1
             fi
-            if [ "$name" = node-bun ]; then
+            if [ "$name" = node-bun ] || [ "$name" = node-bun-docker ]; then
               for tool in node bun; do
                 if ! docker run --rm --platform "$platform" --entrypoint "$tool" "$ref" --version; then
                   echo "::error::$ref cannot run $tool on $platform"
                   fail=1
                 fi
               done
+            fi
+            if [ "$name" = node-bun-docker ]; then
+              for tool in git make docker; do
+                if ! docker run --rm --platform "$platform" --entrypoint "$tool" "$ref" --version; then
+                  echo "::error::$ref cannot run $tool on $platform"
+                  fail=1
+                fi
+              done
+              if ! docker run --rm --platform "$platform" --entrypoint direnv "$ref" version; then
+                echo "::error::$ref cannot run direnv on $platform"
+                fail=1
+              fi
+              if ! docker run --rm --platform "$platform" --entrypoint docker "$ref" compose version; then
+                echo "::error::$ref cannot run docker compose on $platform"
+                fail=1
+              fi
             fi
             printf '::endgroup::\n'
           done < <(jq -r '.images[].name' images/manifest.json)
