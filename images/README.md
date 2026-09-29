@@ -14,6 +14,29 @@ what a container needs to be pleasant to work in, without a build step:
 With one of these, the generated config has no `features`, the CLI builds
 nothing, and a provision is a `docker run` plus a container start.
 
+## Platforms
+
+Every template is published for **linux/amd64 and linux/arm64**, as one
+multi-arch tag, so Docker picks the right one for the host.
+
+This matters more than it looks. The Dev Container CLI does not run your image
+directly: when the container user's uid differs from the host's, it builds a
+`vsc-…-uid` copy of the image first. That build passes `--platform` explicitly,
+so on a host with no matching variant it fails outright — and you get a
+`docker build --platform linux/amd64` error rather than a clear "wrong
+architecture". An amd64-only tag on an Apple Silicon or ARM server does not fall
+back to building from your config; it just breaks.
+
+Linux only: a devcontainer is a Linux container, so there is no macOS or
+Windows image to publish. `arm/v7` is left out deliberately — Herdr publishes
+`linux-x86_64` and `linux-aarch64` only, and the base image installs it, so
+there would be nothing to install on a 32-bit ARM host.
+
+`verify` in the workflow runs every template on **both** architectures, on
+native runners. Checking only on amd64 would mean the arm64 half is never
+executed in CI, and a layer that fails to unpack there would surface on a user's
+machine instead.
+
 ## Using one
 
 ```sh
@@ -34,19 +57,55 @@ WTDC_IMAGE_REMOTE_USER=dev
 The plugin pulls the image once if it is not local, so the first provision of a
 template pays the pull and every one after that does not.
 
-## Templates
+Naming a template **replaces** the `image` in your own `devcontainer.json` and
+drops its `features`, which the plugin reports by name. `WTDC_TEMPLATE` is blank
+by default for exactly that reason: a repo's own config is what runs unless it
+asks otherwise. A repo that declares no features, or that names one of these
+images itself, is on the fast path without any template configured.
 
-| Template | Adds |
-|---|---|
-| `base` | Ubuntu 24.04, herdr, git, curl, jq, ripgrep, less, sudo |
-| `node` | Node 24 LTS, corepack |
-| `python` | CPython 3, `uv` |
-| `rust` | rustup stable, `build-essential`, `pkg-config`, `libssl-dev` |
+## What's in each image
 
-`base` is deliberately slim: no compiler, no language runtimes, no editors.
-`build-essential` alone was ~250MB, which was most of why these images were
-heavy. Toolchains that genuinely need a linker pull their own copy in
-(`rust` does).
+Sizes are the published `:latest` tags. Everything is inherited from `base`, so this
+table is what each one *adds* — pick a row and you also get the first.
+
+| | `base` | `node` | `python` | `rust` |
+|---|---|---|---|---|
+| **Size** | 67 MB | 138 MB | 106 MB | 360 MB |
+| **Base OS** | Ubuntu 24.04 | ← | ← | ← |
+| **User** | `dev`, uid 1000, NOPASSWD sudo | ← | ← | ← |
+| **Workdir** | `/workspaces`, owned by `dev` | ← | ← | ← |
+| **herdr** | 0.9.1 at `/usr/local/bin/herdr` | ← | ← | ← |
+| git, curl, jq, ripgrep, less | ✅ | ← | ← | ← |
+| ca-certificates, tzdata | ✅ | ← | ← | ← |
+| **Node 24 LTS** + corepack | — | ✅ | — | — |
+| **CPython 3** + venv + pip | — | — | ✅ | — |
+| **`uv`** | — | — | ✅ | — |
+| **rustup** stable, minimal profile | — | — | — | ✅ |
+| `build-essential`, `pkg-config`, `libssl-dev` | — | — | — | ✅ |
+| `RUSTUP_HOME`, `CARGO_HOME` on `PATH` | — | — | — | ✅ |
+| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv` | — | — | ✅ | — |
+
+← means inherited from the column to the left, not absent. ✓ means added by that image.
+
+Not in any of them, deliberately: **no compiler in `base`**, no language runtimes, no
+editors, and no editor at all. `build-essential` alone was ~250MB, which was most of why
+these images used to be heavy. Toolchains that genuinely need a linker pull their own
+copy in — only `rust` does, which is why it is 5× the size of `base`.
+
+Two environment details worth knowing, because they are set in the image rather than
+left to the CLI:
+
+- `UV_PROJECT_ENVIRONMENT=/workspaces/.venv` means `uv` puts venvs in the workspace,
+  where the bind mount makes them persistent, instead of in `$HOME`.
+- `RUSTUP_HOME`/`CARGO_HOME` are under `/usr/local` and world-writable, so `dev` can add
+  toolchains without `sudo`.
+
+The `dev` user and its uid are load-bearing rather than cosmetic. The Dev Container CLI
+refuses to remap a uid that another user already holds, and `ubuntu:24.04` ships a
+`ubuntu` user at 1000 — so `base` deletes it and gives `dev` that uid, which makes the
+remap a genuine no-op on a uid-1000 host and still correct elsewhere. The image carries
+`devcontainer.remote.uid` and `devcontainer.remote.user` labels so the plugin can skip
+building a useless `-uid` copy of the image.
 
 ## Adding a template
 

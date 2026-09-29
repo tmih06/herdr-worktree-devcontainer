@@ -1,23 +1,21 @@
 {
   // Dev container for developing the worktree-devcontainer plugin itself.
   //
-  // Deliberately minimal: it is the fixture the plugin's tests provision
-  // against. The plugin injects nothing here beyond the readiness marker it
-  // appends to postCreateCommand, so this file is also the proof that a user's
-  // own config stays authoritative — no features, ports, or users are added on
-  // top of it.
+  // Points at this project's own published image, which is what keeps a provision here
+  // a `docker run` rather than an image build. The alternative — declaring
+  // `ghcr.io/devcontainers/features/node:1` — makes the Dev Container CLI derive a
+  // per-workspace image, so every new worktree of this repo pays ~25s before it can
+  // start. The template already carries the toolchain, so there is nothing to derive.
+  //
+  // Multi-arch (linux/amd64 and linux/arm64) as of the image workflow's `platforms:`
+  // line; see images/README.md.
   "name": "herdr-worktree-devcontainer",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest",
 
-  "features": {
-    // Declared on purpose. Any feature here makes the devcontainer CLI derive a
-    // per-workspace image instead of just running one, so keeping this in the
-    // fixture is what exercises the build-per-worktree path that WTDC_TEMPLATE
-    // exists to avoid.
-    "ghcr.io/devcontainers/features/node:1": {}
-  },
+  "remoteUser": "dev",
 
-  // The plugin rewrites this into a single string chained with &&, because the
-  // devcontainer CLI joins array items with a space and execs the result.
+  // Nothing else is needed, and nothing is added by the plugin beyond the readiness
+  // marker it appends to postCreateCommand. This file is also the proof that a user's
+  // own config stays authoritative: no features, no published ports, no injected users.
   "postCreateCommand": "echo 'worktree-devcontainer dev container ready'"
 }

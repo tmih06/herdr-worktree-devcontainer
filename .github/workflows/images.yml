@@ -9,6 +9,18 @@ name: images
 #
 # Shape: base builds first on its own, because every other template is FROM it
 # and needs it published. The rest then build in parallel.
+#
+# Platforms: linux/amd64 and linux/arm64. Without an explicit `platforms`, buildx builds
+# for the runner's own architecture and nothing else, and the single amd64 image is
+# pushed under a tag that reads as universal. That is not a fallback on an arm64 host,
+# it is a hard failure: the Dev Container CLI's uid-remap step runs `docker build
+# --platform linux/amd64`, so provisioning a worktree on Apple Silicon or any ARM server
+# dies rather than falling back.
+#
+# Only Linux, and only those two architectures. A devcontainer is a Linux container, so
+# there is no macOS or Windows image to build; and arm/v7 is left out deliberately rather
+# than by oversight — Herdr publishes linux-x86_64 and linux-aarch64 only, and the base
+# image installs it, so an arm/v7 variant would have nothing to install.
 
 on:
   push:
@@ -33,6 +45,12 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  # One place, so the base and the derived templates can never drift apart. A devcontainer
+  # is a Linux container, so there is no macOS or Windows image to build; arm/v7 is left
+  # out deliberately rather than by oversight — Herdr publishes linux-x86_64 and
+  # linux-aarch64 only, and the base image installs it, so arm/v7 would have nothing to
+  # install.
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   # Validate and shape the build before anything expensive runs: a broken
@@ -81,6 +99,12 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # QEMU is what makes the arm64 half of PLATFORMS buildable on an amd64 runner. It is
+      # emulation, so this leg is slow — the base image installs apt packages and Herdr
+      # under emulation.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -92,6 +116,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ fromJson(needs.plan.outputs.base).dir }}
+          platforms: ${{ env.PLATFORMS }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ fromJson(needs.plan.outputs.base).ref }}
           provenance: false
@@ -110,6 +135,9 @@ jobs:
       matrix: ${{ fromJson(needs.plan.outputs.derived) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -121,6 +149,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.dir }}
+          platforms: ${{ env.PLATFORMS }}
           build-args: |
             BASE_IMAGE=${{ matrix.base_ref }}
           push: ${{ github.event_name != 'pull_request' }}
@@ -129,11 +158,24 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  # Runs each template on each architecture, natively. Verifying on the amd64 runner alone
+  # would only ever test the amd64 half: `docker run <tag>` picks the image matching the
+  # daemon, so an arm64-only regression — a layer that fails to unpack, a binary built for
+  # the wrong arch — passes CI and then fails on the user's machine, which is the one place
+  # it is expensive.
   verify:
-    name: verify
+    name: verify ${{ matrix.platform }}
     needs: [plan, build-base, build]
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Log in to GHCR
@@ -149,13 +191,22 @@ jobs:
           [ -n "$tag" ] || tag=$(jq -r .tag images/manifest.json)
           registry=$(jq -r .registry images/manifest.json)
           prefix=$(jq -r .prefix images/manifest.json)
+          platform='${{ matrix.platform }}'
 
           fail=0
           while read -r name; do
             ref="$registry/$prefix-$name:$tag"
-            printf '::group::%s\n' "$ref"
-            if ! docker run --rm --entrypoint /usr/local/bin/herdr "$ref" --version; then
-              echo "::error::$ref is not runnable"
+            printf '::group::%s (%s)\n' "$ref" "$platform"
+            # The architecture the tag resolved to has to be the one this runner is, or
+            # the manifest list is wrong in a way that only some users would hit.
+            got="$(docker image inspect --format '{{.Architecture}}' "$ref" 2>/dev/null || echo none)"
+            want="${platform#linux/}"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$ref resolved to $got on a $want host"
+              fail=1
+            fi
+            if ! docker run --rm --platform "$platform" --entrypoint /usr/local/bin/herdr "$ref" --version; then
+              echo "::error::$ref is not runnable on $platform"
               fail=1
             fi
             printf '::endgroup::\n'

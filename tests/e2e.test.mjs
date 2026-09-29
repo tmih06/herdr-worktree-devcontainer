@@ -14,6 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 
+import { buildMerged } from '../lib/wtdc/devcontainer.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin', 'wtdc.mjs');
 
@@ -70,6 +72,14 @@ const WT_FRESH = path.join(sandbox, 'worktrees', 'fresh');
 fs.mkdirSync(path.join(WT_FRESH, '.devcontainer'), { recursive: true });
 fs.writeFileSync(path.join(WT_FRESH, '.devcontainer', 'devcontainer.json'),
   '{ "image": "debian:12", "postCreateCommand": "echo ok" }');
+
+// Declares a feature, so provisioning it with a template exercises the "these features
+// are not applied" warning. Separate from WT_FRESH for the same reason: provisioning
+// records state, and hook_created skips anything that already has it.
+const WT_TEMPLATE = path.join(sandbox, 'worktrees', 'template');
+fs.mkdirSync(path.join(WT_TEMPLATE, '.devcontainer'), { recursive: true });
+fs.writeFileSync(path.join(WT_TEMPLATE, '.devcontainer', 'devcontainer.json'),
+  '{ "image": "debian:12", "features": { "ghcr.io/devcontainers/features/node:1": {} } }');
 
 const record = (tool) => (...args) => {
   fs.appendFileSync(path.join(CALLS, tool), `${args.join(' ')}\n`);
@@ -220,6 +230,46 @@ test('nothing is injected into the image any more', () => {
   assert.deepEqual(merged.runArgs, ['--init', '--hostname', 'demo'], 'no SSH port is published');
   assert.equal(Object.keys(merged.features || {}).length, 0, 'no feature is injected');
   assert.match(merged.postCreateCommand, /&& id -un > \/tmp\/wtdc-user$/);
+});
+
+test('the repo\'s own devcontainer.json decides the image, by default', () => {
+  // A default that silently replaced the declared image made that file a lie: the
+  // provision log named one image and the config named another, and the only clue was a
+  // warning about dropped features. So assert it where it matters — on the config the
+  // provision actually built from, read out of the sandboxed run.
+  //
+  // This has to go through wtdc() rather than calling loadConfig() here: in this process
+  // HERDR_PLUGIN_CONFIG_DIR is unset, so it would read the real user's config.env and
+  // quietly assert whatever that happens to contain.
+  const merged = JSON.parse(fs.readFileSync(state().entries[WT].merged_config, 'utf8'));
+  assert.equal(merged.image, 'mcr.microsoft.com/devcontainers/base:ubuntu',
+    'the image the fixture declares is the image that runs');
+});
+
+test('a template is applied only when one is asked for, and says what it drops', () => {
+  // Its own checkout: provisioning one records state, and hook_created skips a worktree
+  // that already has it, so sharing a fixture with a hook test would break that one.
+  const res = wtdc(['provision', WT_TEMPLATE, 'w9', 'tpl'], { WTDC_TEMPLATE: 'base' });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /these features are not applied/,
+    'opting in still names what it dropped, rather than dropping it quietly');
+  const merged = JSON.parse(fs.readFileSync(state().entries[WT_TEMPLATE].merged_config, 'utf8'));
+  assert.match(merged.image, /^ghcr\.io\/.+-base:/, 'and the template does replace the image');
+});
+
+test('a worktree declaring no features needs no template to be on the fast path', () => {
+  // The reason the template mechanism exists at all: any `features` makes the CLI derive
+  // a per-workspace image, so every new worktree pays for a build. A config that names a
+  // prebuilt image itself gets the same speed with nothing configured.
+  const dir = tmp();
+  const src = path.join(dir, 'devcontainer.json');
+  const out = path.join(dir, 'out.json');
+  fs.writeFileSync(src, '{ "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest", "remoteUser": "dev" }');
+
+  buildMerged(src, out, { WTDC_IMAGE: '', WTDC_TEMPLATE: '' });
+  const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.equal(merged.image, 'ghcr.io/tmih06/herdr-devcontainer-node:latest', 'the image is left alone');
+  assert.deepEqual(merged.features || {}, {}, 'and there is nothing for the CLI to build from');
 });
 
 test('the worktree stays a local Herdr workspace and is marked, not moved', () => {

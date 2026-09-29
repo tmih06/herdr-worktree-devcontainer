@@ -141,6 +141,62 @@ The shell dispatcher gets the same isolation — a real filesystem, real
 processes, real package and port separation — with none of that, and without
 the worktree moving.
 
+## Your `devcontainer.json`
+
+The plugin does not invent a container. It finds this file — `.devcontainer/devcontainer.json`
+or `.devcontainer.json`, in that order, overridable with `WTDC_CONFIG_CANDIDATES` — and
+provisions from it. Yours is authoritative: image, features, `remoteUser`, mounts and
+lifecycle commands are all used as written.
+
+The simplest version that works, and the one this repository uses for itself:
+
+```jsonc
+{
+  "name": "myproject",
+  "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest",
+  "remoteUser": "dev",
+  "postCreateCommand": "npm ci"
+}
+```
+
+Naming one of the [prebuilt images](images/README.md) is the fast path: with no
+`features` in the config, a provision is a `docker run` rather than an image build,
+so a new worktree costs seconds instead of a build. See
+[`images/README.md`](images/README.md) for what each one contains.
+
+Declaring `features` is the alternative, and it is the one to know the cost of:
+
+```jsonc
+{
+  "name": "myproject",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+  "postCreateCommand": "npm ci"
+}
+```
+
+That works and nothing is overridden — but any `features` entry makes the Dev Container
+CLI derive a **per-workspace image**, so every new worktree of this repo pays a build
+(~25s warm, minutes cold) before it can start. Two ways out: drop the features and name
+a prebuilt image that already has the toolchain, or set `WTDC_TEMPLATE` to replace the
+image — which does drop your `features`, so the plugin names each one it drops rather
+than dropping it quietly.
+
+Two things the plugin adds to a copy of this file, both outside your checkout, so
+`git status` stays clean:
+
+- `id -un > /tmp/wtdc-user` appended to `postCreateCommand`. `devcontainer up` returns
+  *before* `postCreateCommand` finishes, so this file is how the plugin knows the
+  container is actually ready rather than merely started.
+- `--hostname <branch>` in `runArgs`, so the prompt says which worktree you are in. A
+  `--hostname` you set yourself always wins. See `WTDC_HOSTNAME`.
+
+An object-form `postCreateCommand` (`{"server": "make dev"}`) is **rejected** rather
+than reshaped: there is no way to append to it without changing what it means. Convert
+it to a string or an array of strings.
+
 ## Configuration
 
 Herdr copies [`config/config.default.env`](config/config.default.env) to its
@@ -159,7 +215,7 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_CONTAINER_ICON` | `🐳` | marker prepended to the worktree's sidebar label |
 | `WTDC_EXTRA_MOUNTS` | | extra `devcontainer up --mount` value |
 | `WTDC_CONFIG_CANDIDATES` | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the worktree |
-| `WTDC_TEMPLATE` / `WTDC_IMAGE` | `base` | run a prebuilt image instead of building one |
+| `WTDC_TEMPLATE` / `WTDC_IMAGE` | *(blank)* | run a prebuilt image instead of the one your config declares |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
 authoritative; the plugin injects nothing but a readiness marker and a
@@ -189,19 +245,35 @@ literal string to pin it.
 ### Prebuilt images
 
 A config that declares any `features` makes the CLI derive a per-workspace
-image, so every new worktree pays a build. The templates in `images/` bake in
-what the plugin used to inject, so `up` is just `docker run`:
+image, so every new worktree pays a build. The templates in `images/` exist to
+skip that, but **nothing applies one unless you ask**:
+
+```sh
+WTDC_TEMPLATE=node     # a template by name
+WTDC_IMAGE=my/image:tag  # or your own image
+```
 
 | Setup | Time |
 |---|---|
 | Building a per-worktree image | ~25s warm, minutes cold |
 | Prebuilt image | ~4s |
 
-`WTDC_TEMPLATE` defaults to `base`, so a new install is already on the fast
-path. Use `node`, `python`, or `rust` for a toolchain. This costs you the
-features in your own config; the plugin warns and names them rather than
-dropping them silently. Blank `WTDC_TEMPLATE` to go back to letting the CLI
-build from your config's features.
+`WTDC_TEMPLATE` is blank by default, so **your `devcontainer.json` decides what
+runs**. A default that quietly replaced the declared image would make that file
+misleading — and it was: the provision log named one image, the config named
+another, and the only clue was a warning about dropped features. Opting in does
+replace your `image` and drop your `features`, and the plugin names each feature
+it drops rather than dropping it quietly.
+
+You often do not need a template at all. A config that declares no features is
+already a `docker run`, and one that names a prebuilt image itself is too — this
+repository's own `.devcontainer/devcontainer.json` does exactly that, so a
+worktree of this repo provisions in seconds with nothing configured.
+
+All templates are published for **linux/amd64 and linux/arm64** as one multi-arch
+tag. That is not decoration: the CLI builds a uid-remapped copy of the image with
+an explicit `--platform`, so an amd64-only tag on an ARM host fails outright
+rather than falling back. See [`images/README.md`](images/README.md).
 
 ## State and cleanup
 

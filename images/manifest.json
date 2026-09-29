@@ -4,6 +4,8 @@
   "registry": "ghcr.io/tmih06",
   "prefix": "herdr-devcontainer",
   "tag": "latest",
+  "//platforms": "Documentation only, kept in step with PLATFORMS in .github/workflows/images.yml. Every template is published for both, and a manifest list means Docker picks the right one. Recorded here because \"the template did not work\" is otherwise indistinguishable from \"this host is not one of the two\".",
+  "platforms": ["linux/amd64", "linux/arm64"],
   "images": [
     {
       "name": "base",
