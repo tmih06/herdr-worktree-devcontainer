@@ -11,6 +11,9 @@ set -uo pipefail
 
 export WTDC_PLUGIN_ROOT="${WTDC_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# The stub the launcher is expected to reach, shared with the python driver below.
+BASE=/tmp/wtdc-prompt-test
+
 fail=0
 check() {
   if [ "$2" = "$3" ]; then
@@ -33,7 +36,9 @@ shutil.rmtree(base, ignore_errors=True)
 os.makedirs(base + "/wt/.devcontainer", exist_ok=True)
 os.makedirs(base + "/bin", exist_ok=True)
 open(base + "/wt/.devcontainer/devcontainer.json", "w").write('{"name":"demo"}')
-open(base + "/bin/herdr", "w").write('#!/usr/bin/env bash\nexit 0\n')
+# The stub records that it was called, so the test can tell "the launcher was stubbed"
+# from "the launcher never ran at all".
+open(base + "/bin/herdr", "w").write('#!/usr/bin/env bash\necho "$*" >> "' + base + '/calls"\nexit 0\n')
 os.chmod(base + "/bin/herdr", 0o755)
 
 env = dict(os.environ)
@@ -48,6 +53,12 @@ env.update({
     "WTDC_REPO": "repo",
     "PATH": base + "/bin:" + env["PATH"],
 })
+# The stub on PATH is not enough: lib/wtdc/context.mjs prefers HERDR_BIN_PATH, and that
+# is set in any pane this test is likely to be run from. Left alone, the launcher that
+# "y" spawns opens a real setup screen over whatever pane is focused, and runs a real
+# `devcontainer up` against the fixture — which is why this test was flaky, and why it
+# could leave a build screen on someone's terminal.
+env["HERDR_BIN_PATH"] = base + "/bin/herdr"
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -82,17 +93,29 @@ for chunk in keys.split(b"|"):
     pump(0.5)
 pump(0.6)
 
-# Is the process still alive and still drawing the prompt?
-alive = True
-try:
-    done, _ = os.waitpid(pid, os.WNOHANG)
-    alive = done == 0
-except ChildProcessError:
-    alive = False
+# Is the process still alive and still drawing the prompt? A prompt that was supposed to
+# dismiss gets a moment to actually exit rather than a fixed guess: on a loaded machine
+# "has not exited yet" and "stays on screen" look identical, and the second one is the
+# bug this whole file exists for.
+def exited_within(sec):
+    end = time.time() + sec
+    while time.time() < end:
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if done != 0:
+            return True
+        pump(0.1)
+    return False
+
+dismissed = b"\x1b" in keys or b"n" in keys or b"y" in keys or b"\r" in keys
+alive = not (dismissed and exited_within(5))
 if alive:
     try:
         os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
+        os.waitpid(pid, 0)
+    except (ProcessLookupError, ChildProcessError):
         pass
 try:
     os.close(fd)
@@ -101,6 +124,16 @@ except OSError:
 
 text = buf.decode("utf-8", "replace")
 frames = text.count("Create a dev container for this worktree")
+
+# An accepted prompt spawns boot-launch detached, so it is still starting up when the
+# prompt itself has already exited. Wait for it here rather than in the caller: the
+# shell has no way to tell an accepting drive from a declining one, and a check that
+# races a detached process is a check that reports whatever it happened to see.
+if "starting dev container" in text:
+    deadline = time.time() + 10
+    while time.time() < deadline and not os.path.exists(base + "/calls"):
+        time.sleep(0.1)
+
 print("alive" if alive else "exited", frames)
 PY
 }
@@ -140,6 +173,17 @@ check 'space toggles and keeps the prompt open' 'alive' "$(echo "$out" | cut -d'
 
 out="$(drive 'space-then-down-arrow' ' |\x1b[B')"
 check 'arrow after a toggle still does not dismiss' 'alive' "$(echo "$out" | cut -d' ' -f1)"
+
+printf 'the launcher is stubbed out\n'
+# Answering yes spawns boot-launch, which opens the setup screen. That has to reach the
+# stub: a test that quietly opens a real pane over the user's focused one and starts a
+# real build is worse than no test at all. Each drive wipes the sandbox, so this has to be
+# a drive of its own, and one that actually accepts.
+drive 'y' 'y' >/dev/null
+check 'the stub launcher was called, not the real herdr' 'yes' \
+  "$([ -s "$BASE/calls" ] && echo yes || echo no)"
+check 'it asked for the setup screen by name' 'yes' \
+  "$(grep -q 'entrypoint boot' "$BASE/calls" 2>/dev/null && echo yes || echo no)"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then
