@@ -53,7 +53,7 @@ machine instead.
 
 ```sh
 # by template name, resolved through manifest.json
-export WTDC_TEMPLATE=node
+export WTDC_TEMPLATE=node-bun
 
 # or straight at an image
 export WTDC_IMAGE=ghcr.io/tmih06/herdr-devcontainer-base:latest
@@ -80,24 +80,26 @@ images itself, is on the fast path without any template configured.
 Sizes are the published `:latest` tags. Everything is inherited from `base`, so this
 table is what each one _adds_ — pick a row and you also get the first.
 
-|                                               | `base`                          | `node` | `python` | `rust` |
-| --------------------------------------------- | ------------------------------- | ------ | -------- | ------ |
-| **Size**                                      | 67 MB                           | 138 MB | 106 MB   | 360 MB |
-| **Base OS**                                   | Ubuntu 24.04                    | ←      | ←        | ←      |
-| **User**                                      | `dev`, uid 1000, NOPASSWD sudo  | ←      | ←        | ←      |
-| **Workdir**                                   | `/workspaces`, owned by `dev`   | ←      | ←        | ←      |
-| **herdr**                                     | 0.9.1 at `/usr/local/bin/herdr` | ←      | ←        | ←      |
-| git, curl, jq, ripgrep, less                  | ✅                              | ←      | ←        | ←      |
-| ca-certificates, tzdata                       | ✅                              | ←      | ←        | ←      |
-| **Node 24 LTS** + corepack                    | —                               | ✅     | —        | —      |
-| **CPython 3** + venv + pip                    | —                               | —      | ✅       | —      |
-| **`uv`**                                      | —                               | —      | ✅       | —      |
-| **rustup** stable, minimal profile            | —                               | —      | —        | ✅     |
-| `build-essential`, `pkg-config`, `libssl-dev` | —                               | —      | —        | ✅     |
-| `RUSTUP_HOME`, `CARGO_HOME` on `PATH`         | —                               | —      | —        | ✅     |
-| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv`    | —                               | —      | ✅       | —      |
+|                                               | `base`                          | `node` | `node-bun` | `python` | `rust` |
+| --------------------------------------------- | ------------------------------- | ------ | ---------- | -------- | ------ |
+| **Size**                                      | 67 MB                           | 138 MB | pending    | 106 MB   | 360 MB |
+| **Base OS**                                   | Ubuntu 24.04                    | ←      | ←          | ←        | ←      |
+| **User**                                      | `dev`, uid 1000, NOPASSWD sudo  | ←      | ←          | ←        | ←      |
+| **Workdir**                                   | `/workspaces`, owned by `dev`   | ←      | ←          | ←        | ←      |
+| **herdr**                                     | 0.9.1 at `/usr/local/bin/herdr` | ←      | ←          | ←        | ←      |
+| git, curl, jq, ripgrep, less                  | ✅                              | ←      | ←          | ←        | ←      |
+| ca-certificates, tzdata                       | ✅                              | ←      | ←          | ←        | ←      |
+| **Node 24 LTS** + corepack                    | —                               | ✅     | ✅         | —        | —      |
+| **Bun**                                       | —                               | —      | ✅         | —        | —      |
+| **CPython 3** + venv + pip                    | —                               | —      | —          | ✅       | —      |
+| **`uv`**                                      | —                               | —      | —          | ✅       | —      |
+| **rustup** stable, minimal profile            | —                               | —      | —          | —        | ✅     |
+| `build-essential`, `pkg-config`, `libssl-dev` | —                               | —      | —          | —        | ✅     |
+| `RUSTUP_HOME`, `CARGO_HOME` on `PATH`         | —                               | —      | —          | —        | ✅     |
+| `UV_PROJECT_ENVIRONMENT=/workspaces/.venv`    | —                               | —      | —          | ✅       | —      |
 
-← means inherited from the column to the left, not absent. ✓ means added by that image.
+← means inherited from `base`, not absent. ✓ means added by that image. The
+`node-bun` size is pending its first publish.
 
 Not in any of them, deliberately: **no compiler in `base`**, no language runtimes, no
 editors, and no editor at all. `build-essential` alone was ~250MB, which was most of why

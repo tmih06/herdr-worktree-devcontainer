@@ -219,6 +219,14 @@ jobs:
               echo "::error::$ref is not runnable on $platform"
               fail=1
             fi
+            if [ "$name" = node-bun ]; then
+              for tool in node bun; do
+                if ! docker run --rm --platform "$platform" --entrypoint "$tool" "$ref" --version; then
+                  echo "::error::$ref cannot run $tool on $platform"
+                  fail=1
+                fi
+              done
+            fi
             printf '::endgroup::\n'
           done < <(jq -r '.images[].name' images/manifest.json)
           exit "$fail"

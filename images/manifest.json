@@ -19,6 +19,12 @@
       "description": "base plus Node 24 LTS"
     },
     {
+      "name": "node-bun",
+      "dir": "images/node-bun",
+      "base": "base",
+      "description": "base plus Node 24 LTS and Bun"
+    },
+    {
       "name": "python",
       "dir": "images/python",
       "base": "base",
