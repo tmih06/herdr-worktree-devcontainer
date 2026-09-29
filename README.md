@@ -268,18 +268,12 @@ a prebuilt image that already has the toolchain, or set `WTDC_TEMPLATE` to repla
 image — which does drop your `features`, so the plugin names each one it drops rather
 than dropping it quietly.
 
-Two things the plugin adds to a copy of this file, both outside your checkout, so
-`git status` stays clean:
-
-- `id -un > /tmp/wtdc-user` appended to `postCreateCommand`. `devcontainer up` returns
-  _before_ `postCreateCommand` finishes, so this file is how the plugin knows the
-  container is actually ready rather than merely started.
-- `--hostname <branch>` in `runArgs`, so the prompt says which worktree you are in. A
-  `--hostname` you set yourself always wins. See `WTDC_HOSTNAME`.
-
-An object-form `postCreateCommand` (`{"server": "make dev"}`) is **rejected** rather
-than reshaped: there is no way to append to it without changing what it means. Convert
-it to a string or an array of strings.
+The plugin sets `waitFor` to `postCreateCommand` in its temporary config copy, so the
+Dev Container CLI waits for your lifecycle command to finish before provisioning
+returns. Your `postCreateCommand` keeps its original string, array, or object shape.
+The build timeout applies to this wait as well as the CLI work. The plugin also adds
+`--hostname <branch>` in `runArgs`, so the prompt says which worktree you are in. A
+`--hostname` you set yourself always wins. See `WTDC_HOSTNAME`.
 
 ## Configuration
 
@@ -292,9 +286,9 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_ENABLED`                 | `1`                                                  | master switch for hooks and actions                                                               |
 | `WTDC_ON_CREATE`               | `prompt`                                             | `prompt`, `auto`, or `never`                                                                      |
 | `WTDC_NOTIFY`                  | `1`                                                  | notify when the build finishes or fails                                                           |
-| `WTDC_BUILD_TIMEOUT`           | `1800`                                               | seconds to wait for the readiness marker                                                          |
+| `WTDC_BUILD_TIMEOUT`           | `1800`                                               | maximum seconds for `devcontainer up`, including `postCreateCommand`                              |
 | `WTDC_KEEP_CONTAINER`          | `0`                                                  | keep the container when the worktree is removed                                                   |
-| `WTDC_OPEN_CONTAINER_PANE`     | `1`                                                  | open a container tab when the build finishes                                                      |
+| `WTDC_OPEN_CONTAINER_PANE`     | `1`                                                  | hand the setup pane over to a container shell when the build finishes; `0` leaves the host shell  |
 | `WTDC_HOSTNAME`                | `branch`                                             | container hostname: `branch`, `off`, or a literal                                                 |
 | `WTDC_CONTAINER_ICON`          | `🐳`                                                 | marker prepended to the worktree's sidebar label, for as long as its container exists             |
 | `WTDC_EXTRA_MOUNTS`            |                                                      | extra `devcontainer up --mount` value                                                             |
@@ -303,9 +297,8 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_TEMPLATE` / `WTDC_IMAGE` | _(blank)_                                            | run a prebuilt image instead of the one your config declares                                      |
 
 Your image, features, `remoteUser`, mounts, and lifecycle commands stay
-authoritative; the plugin injects nothing but a readiness marker and a
-`--hostname`. Object-form `postCreateCommand` is rejected rather than silently
-reshaped, because it cannot be appended to without changing its meaning.
+authoritative. The plugin sets `waitFor` to `postCreateCommand` and adds a
+`--hostname`; it does not rewrite the lifecycle command.
 
 ### The prompt says which worktree you are in
 

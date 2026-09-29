@@ -6,7 +6,7 @@ name: ci
 # so the commit that breaks a check is the one still sitting in someone's
 # worktree. A branch-only gate reports the breakage hours later, on a machine that
 # is not the one that caused it, by which point the person has moved on. Runs are
-# seconds — 102 tests, no build, no image — so there is nothing to save by waiting.
+# seconds, with no build or image, so there is nothing to save by waiting.
 #
 # Deliberately not here: tests/real-e2e.sh and tests/prompt-keys.sh. Both drive a
 # real Herdr over a real PTY, which does not exist on a runner, and both exit 0
