@@ -190,11 +190,6 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   try {
     dc.buildMerged(src, merged, config, checkout);
   } catch (err) {
-    if (/object-form postCreateCommand/.test(err.message)) {
-      die(`${src} uses the object form of postCreateCommand, which cannot be
-   merged without changing its meaning. Convert it to a string or an array of
-   strings and re-run.`);
-    }
     die(`could not merge ${src} into ${merged}: ${err.message}`);
   }
 
@@ -616,9 +611,8 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
 // ---------------------------------------------------------------------- entry
 
 function main() {
-  // Hard anti-recursion guard, checked before anything else. The marker file is
-  // the dependable signal: postCreateCommand writes it, so it only exists in a
-  // container this plugin provisioned.
+  // Shells entered through the dispatcher carry WTDC_IN_CONTAINER=1, so a copy of
+  // this CLI invoked there cannot try to provision another container.
   if (insideContainer()) {
     process.stdout.write("worktree-devcontainer: disabled inside a dev container\n");
     return;

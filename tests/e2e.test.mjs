@@ -69,7 +69,7 @@ const WT_BROKEN = path.join(sandbox, "worktrees", "broken");
 fs.mkdirSync(path.join(WT_BROKEN, ".devcontainer"), { recursive: true });
 fs.writeFileSync(
   path.join(WT_BROKEN, ".devcontainer", "devcontainer.json"),
-  '{ "image": "debian:12", "postCreateCommand": {"x":"y"} }',
+  '{ "image": "debian:12", "postCreateCommand": "echo ok" }',
 );
 
 // A valid, never-provisioned worktree, for the paths that must be reached
@@ -123,6 +123,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$sub" = "up" ] || exit 0
+[ -z "$WTDC_STUB_UP_FAIL" ] || exit 23
 printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"devuser"}'
 `,
 );
@@ -256,7 +257,8 @@ test("nothing is injected into the image any more", () => {
   const merged = JSON.parse(fs.readFileSync(state().entries[WT].merged_config, "utf8"));
   assert.deepEqual(merged.runArgs, ["--init", "--hostname", "demo"], "no SSH port is published");
   assert.equal(Object.keys(merged.features || {}).length, 0, "no feature is injected");
-  assert.match(merged.postCreateCommand, /&& id -un > \/tmp\/wtdc-user$/);
+  assert.equal(merged.postCreateCommand, "echo upstream-ok");
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
 test("the repo's own devcontainer.json decides the image, by default", () => {
@@ -337,19 +339,18 @@ test("a second provision is idempotent", () => {
   assert.equal(state().entries[WT].container_id, "deadbeefcafe");
 });
 
-test("object-form postCreateCommand is rejected with an actionable message", () => {
+test("object-form postCreateCommand is passed through to the CLI", () => {
   const res = wtdc(["provision", WT_OBJFORM, "w10", "objform"]);
-  assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /object form of postCreateCommand/);
-  assert.equal(
-    state().entries[WT_OBJFORM],
-    undefined,
-    "a failed provision must leave no state behind",
-  );
+  assert.equal(res.status, 0, res.stderr);
+  const entry = state().entries[WT_OBJFORM];
+  const merged = JSON.parse(fs.readFileSync(entry.merged_config, "utf8"));
+  assert.deepEqual(merged.postCreateCommand, { server: "make dev" });
+  assert.equal(merged.waitFor, "postCreateCommand");
 });
 
 test("a failed provision leaves the worktree retryable", () => {
-  wtdc(["provision", WT_BROKEN, "w11", "broken"]);
+  const res = wtdc(["provision", WT_BROKEN, "w11", "broken"], { WTDC_STUB_UP_FAIL: "1" });
+  assert.notEqual(res.status, 0);
   assert.equal(state().entries[WT_BROKEN], undefined, "no half-written entry may block a retry");
 });
 
