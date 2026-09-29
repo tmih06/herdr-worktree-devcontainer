@@ -35,7 +35,8 @@ base = "/tmp/wtdc-prompt-test"
 shutil.rmtree(base, ignore_errors=True)
 os.makedirs(base + "/wt/.devcontainer", exist_ok=True)
 os.makedirs(base + "/bin", exist_ok=True)
-open(base + "/wt/.devcontainer/devcontainer.json", "w").write('{"name":"demo"}')
+open(base + "/wt/.devcontainer/devcontainer.json", "w").write(
+    '{"name":"demo","image":"debian:12","postCreateCommand":"echo ok"}')
 # The stub records that it was called, so the test can tell "the launcher was stubbed"
 # from "the launcher never ran at all".
 open(base + "/bin/herdr", "w").write('#!/usr/bin/env bash\necho "$*" >> "' + base + '/calls"\nexit 0\n')
@@ -184,6 +185,69 @@ check 'the stub launcher was called, not the real herdr' 'yes' \
   "$([ -s "$BASE/calls" ] && echo yes || echo no)"
 check 'it asked for the setup screen by name' 'yes' \
   "$(grep -q 'entrypoint boot' "$BASE/calls" 2>/dev/null && echo yes || echo no)"
+
+# A prompt that quotes a plan the user has already replaced is not a stale frame, it is a
+# wrong answer — and editing devcontainer.json while the question is open is the ordinary
+# way to find out what a change does. So the dialog has to notice the file changing.
+# Driven by editing the file from a second process while the prompt sits there.
+printf 'the prompt follows the config it is describing\n'
+watch="$(python3 - <<'PY'
+import os, pty, re, select, time
+
+PLUGIN_ROOT = os.environ["WTDC_PLUGIN_ROOT"]
+base = "/tmp/wtdc-prompt-test"
+cfg = base + "/wt/.devcontainer/devcontainer.json"
+
+env = dict(os.environ)
+env.update({
+    "HERDR_PLUGIN_ROOT": PLUGIN_ROOT,
+    "HERDR_PLUGIN_ID": "worktree-devcontainer",
+    "HERDR_PLUGIN_STATE_DIR": base + "/state",
+    "HERDR_PLUGIN_CONFIG_DIR": base + "/config",
+    "WTDC_CHECKOUT": base + "/wt",
+    "WTDC_WORKSPACE": "w1",
+    "WTDC_LABEL": "demo",
+    "WTDC_REPO": "repo",
+    # Keep the launcher stubbed: this is about what is drawn, not what runs.
+    "HERDR_BIN_PATH": base + "/bin/herdr",
+})
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("node", ["node", PLUGIN_ROOT + "/panes/prompt.mjs"], env)
+
+buf = b""
+def pump(sec):
+    global buf
+    end = time.time() + sec
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+
+pump(3)
+before = open(cfg).read()
+# Swap the image — the one field the dialog renders from this file, so its absence from a
+# later frame means the dialog is quoting a plan the user has already replaced.
+edited = re.sub(r'"image"\s*:\s*"[^"]*"', '"image": "example.invalid/edited:latest"', before)
+assert edited != before, "the fixture has no image to swap"
+open(cfg, "w").write(edited)
+pump(4)
+os.write(fd, b"n")
+time.sleep(0.3)
+open(cfg, "w").write(before)
+
+text = re.sub(r"\x1b\[[0-9;]*m", "", buf.decode("utf-8", "replace"))
+print("fresh" if "edited:latest" in text else "stale")
+PY
+)"
+check 'the prompt re-reads a config that changed under it' 'fresh' "$watch"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then
