@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 // Scratch directories, removed when the file finishes. See the note in unit.test.mjs:
 // these are created per test, so leaving them behind is hundreds of directories a day.
@@ -25,6 +26,25 @@ test.after(() => {
 });
 
 const stripAnsi = (text) => String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+test("dispatcher runs when invoked through a symlink", () => {
+  const dir = tmp();
+  const dispatcher = path.join(dir, "shell.mjs");
+  const realShell = path.join(dir, "real-shell");
+  fs.symlinkSync(path.resolve(import.meta.dirname, "../lib/wtdc/shell.mjs"), dispatcher);
+  fs.writeFileSync(realShell, "#!/bin/sh\nprintf dispatched", { mode: 0o755 });
+
+  const result = spawnSync(process.execPath, [dispatcher], {
+    env: {
+      ...process.env,
+      WTDC_STATE_FILE: path.join(dir, "missing-state.json"),
+      WTDC_REAL_SHELL: realShell,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "dispatched");
+});
 
 // A stub `docker` on PATH answers `ps -q` with a running container and
 // resolves a passwd home, which is all planExec asks of it. The values are
