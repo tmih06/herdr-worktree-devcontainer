@@ -149,11 +149,10 @@ features; only the shell they spawn is different.
 
 The worktree's own row in the sidebar gets a 🐳 in front of its name while the
 container is there, so a glance is enough to tell which worktrees are in one.
-The mark has no expiry: it is true for as long as the container exists, and
-`teardown` is what takes it off. It used to carry a ten-minute TTL, which meant
-the whale appeared when the build finished and then quietly disappeared while
-nothing had happened — a marker that lies about a running container is worse than
-no marker. Set `WTDC_CONTAINER_ICON` to change it, or to `''` to switch it off.
+The plugin updates the workspace label Herdr shows by default, then restores
+the original label on `teardown`. If you rename the workspace yourself while
+the container is running, that new name is preserved. Set
+`WTDC_CONTAINER_ICON` to change the marker, or to `''` to switch it off.
 
 Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
@@ -290,7 +289,7 @@ given when invoking `bin/wtdc.mjs` take precedence.
 | `WTDC_KEEP_CONTAINER`          | `0`                                                  | keep the container when the worktree is removed                                                   |
 | `WTDC_OPEN_CONTAINER_PANE`     | `1`                                                  | hand the setup pane over to a container shell when the build finishes; `0` leaves the host shell  |
 | `WTDC_HOSTNAME`                | `branch`                                             | container hostname: `branch`, `off`, or a literal                                                 |
-| `WTDC_CONTAINER_ICON`          | `🐳`                                                 | marker prepended to the worktree's sidebar label, for as long as its container exists             |
+| `WTDC_CONTAINER_ICON`          | `🐳`                                                 | marker prepended to the worktree's sidebar label while its container exists                       |
 | `WTDC_EXTRA_MOUNTS`            |                                                      | extra `devcontainer up --mount` value                                                             |
 | `WTDC_CONFIG_CANDIDATES`       | `.devcontainer/devcontainer.json .devcontainer.json` | where to look, relative to the source directory                                                   |
 | `WTDC_CONFIG_SOURCE`           | `main`                                               | read the config from the main checkout's file on disk, or `worktree` for each worktree's own copy |

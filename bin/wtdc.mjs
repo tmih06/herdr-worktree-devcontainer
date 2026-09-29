@@ -97,20 +97,46 @@ function requireConfig(checkout, config) {
 // ------------------------------------------------------------------ provision
 
 /**
- * Put the container marker in front of a worktree's name, or take it away.
- *
- * This is the one thing that makes a containerised worktree recognisable in the sidebar
- * without spending a machine node on it. `on` false clears the token, so a worktree whose
- * container has been destroyed stops claiming to have one — the mark is only worth showing
- * while it is true.
+ * Prefix the workspace label Herdr already renders in the default sidebar.
+ * Custom metadata tokens only render when the user adds them to their sidebar layout.
  */
-function markContainerised(workspaceId, label, config, on = true) {
+function markContainerised(workspaceId, config) {
   const icon = config.WTDC_CONTAINER_ICON || "";
-  if (!workspaceId) return false;
-  if (!icon) return false;
-  return on
-    ? herdr.reportWorkspaceToken(workspaceId, "name", `${icon} ${label}`)
-    : herdr.clearWorkspaceToken(workspaceId, "name");
+  if (!workspaceId || !icon) return null;
+  const originalLabel = herdr.workspaceLabel(workspaceId);
+  if (!originalLabel) return null;
+  if (originalLabel.startsWith(`${icon} `)) {
+    return {
+      marked_workspace_id: workspaceId,
+      original_label: originalLabel.slice(icon.length + 1),
+      marked_label: originalLabel,
+    };
+  }
+  const markedLabel = `${icon} ${originalLabel}`;
+  if (!herdr.renameWorkspace(workspaceId, markedLabel)) {
+    warn(`could not mark workspace ${workspaceId} in the sidebar`);
+    return null;
+  }
+  // Remove the token left by older plugin versions so custom layouts do not show it twice.
+  herdr.clearWorkspaceToken(workspaceId, "name");
+  return {
+    marked_workspace_id: workspaceId,
+    original_label: originalLabel,
+    marked_label: markedLabel,
+  };
+}
+
+function unmarkContainerised(entry) {
+  const workspaceId = herdr.workspaceIdFor(entry.checkout_path) || entry.marked_workspace_id;
+  if (!workspaceId) return;
+  const currentLabel = herdr.workspaceLabel(workspaceId);
+  // A user rename takes precedence over the plugin's saved label.
+  if (entry.marked_label && currentLabel === entry.marked_label) {
+    if (!herdr.renameWorkspace(workspaceId, entry.original_label)) {
+      warn(`could not restore workspace ${workspaceId} label`);
+    }
+  }
+  herdr.clearWorkspaceToken(workspaceId, "name");
 }
 
 function provisionFailed() {
@@ -254,7 +280,8 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   // The worktree stays a local Herdr worktree; the container is reached through
   // the shell dispatcher. Mark the row so the sidebar shows which worktrees are
   // containerised, without occupying a machine node.
-  markContainerised(workspaceId, label, config);
+  const marker = markContainerised(workspaceId || herdr.workspaceIdFor(checkout), config);
+  if (marker) state.patch(checkout, marker);
 
   info("");
   ok(`${label} is running in a dev container`);
@@ -320,12 +347,7 @@ function teardown(checkout, force = false) {
   // Take the marker off, unless the container was deliberately kept — in which case it is
   // still there, and the row should still say so.
   if (config.WTDC_KEEP_CONTAINER !== "1" || force) {
-    markContainerised(
-      herdr.workspaceIdFor(entry.checkout_path),
-      entry.label || path.basename(entry.checkout_path),
-      config,
-      false,
-    );
+    unmarkContainerised(entry);
   }
 
   state.del(checkout);
@@ -424,7 +446,19 @@ function startup() {
   if (!have("docker", ["--version"])) return;
 
   const entries = state.list();
-  const running = entries.filter((e) => dc.containerIsRunning(e.container_id)).length;
+  let running = 0;
+  for (const entry of entries) {
+    if (!dc.containerIsRunning(entry.container_id)) continue;
+    running += 1;
+    const workspaceId = herdr.workspaceIdFor(entry.checkout_path);
+    if (!workspaceId) continue;
+    const currentLabel = herdr.workspaceLabel(workspaceId);
+    if (entry.marked_label && currentLabel === entry.marked_label) continue;
+    // Preserve a label the user changed after the plugin marked it.
+    if (entry.marked_label && currentLabel !== entry.original_label) continue;
+    const marker = markContainerised(workspaceId, config);
+    if (marker) state.patch(entry.checkout_path, marker);
+  }
   info(`dev containers tracked: ${entries.length}, running: ${running}`);
 }
 

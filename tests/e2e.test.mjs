@@ -134,7 +134,12 @@ fs.writeFileSync(
 echo "$*" >> "$WTDC_SANDBOX/calls/herdr"
 a1="$1"; a2="$2"; a3="$3"
 if [ "$a1 $a2" = "workspace get" ]; then
-  echo '{"result":{"workspace":{"workspace_id":"w9","label":"demo"}}}'
+  label="$(cat "$WTDC_SANDBOX/workspace-label" 2>/dev/null || printf demo)"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"%s"}}}\n' "$label"
+  exit 0
+fi
+if [ "$a1 $a2" = "workspace rename" ]; then
+  printf '%s' "$4" > "$WTDC_SANDBOX/workspace-label"
   exit 0
 fi
 if [ "$a1 $a2" = "worktree list" ]; then
@@ -319,7 +324,7 @@ test("the worktree stays a local Herdr workspace and is marked, not moved", () =
   // The whole point: no machine is created, and nothing is closed or replaced.
   assert.doesNotMatch(herdrCalls, /machine add/, "must not create a machine");
   assert.doesNotMatch(herdrCalls, /workspace close/, "the worktree workspace must stay open");
-  assert.match(herdrCalls, /workspace report-metadata w9/, "the worktree row should be marked");
+  assert.match(herdrCalls, /workspace rename w9 🐳 demo/, "the worktree row should be marked");
   assert.match(herdrCalls, /pane open --plugin worktree-devcontainer --entrypoint container/);
 });
 
@@ -618,19 +623,14 @@ test("install-shell prints the config line and does not edit config", () => {
 });
 
 test("a provisioned worktree is marked in the sidebar, and stays marked", () => {
-  // The marker is a TTL-less token. With a TTL it appeared when provisioning finished and
-  // quietly vanished ten minutes later, which reads as the container having been cleaned
-  // up when nothing had happened — worse than not marking it, because it is a lie with a
-  // short fuse rather than an absence.
+  // The default sidebar renders the workspace label, not custom metadata tokens.
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "demo");
   reset();
   wtdc(["provision", WT, "w9", "demo"]);
   const marked = calls("herdr");
-  assert.match(
-    marked,
-    /workspace report-metadata w9 .*--token name=\S+ demo/,
-    "the worktree row is marked",
-  );
-  assert.doesNotMatch(marked, /--ttl-ms/, "and the mark does not expire on its own");
+  assert.match(marked, /workspace rename w9 🐳 demo/, "the worktree row is marked");
+  assert.equal(state().entries[WT].original_label, "demo");
+  assert.equal(state().entries[WT].marked_label, "🐳 demo");
 });
 
 test("teardown takes the marker off again", () => {
@@ -639,7 +639,33 @@ test("teardown takes the marker off again", () => {
   wtdc(["provision", WT, "w9", "demo"]);
   reset();
   wtdc(["teardown", WT]);
+  assert.match(calls("herdr"), /workspace rename w9 demo/);
   assert.match(calls("herdr"), /workspace report-metadata .*--clear-token name/);
+});
+
+test("teardown preserves a label the user changed while the container was running", () => {
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "demo");
+  wtdc(["provision", WT, "w9", "demo"]);
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "my own label");
+  reset();
+  wtdc(["teardown", WT]);
+  assert.doesNotMatch(calls("herdr"), /workspace rename w9/);
+  assert.equal(fs.readFileSync(path.join(sandbox, "workspace-label"), "utf8"), "my own label");
+});
+
+test("startup marks an already running container after the plugin is updated", () => {
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "demo");
+  wtdc(["provision", WT, "w9", "demo"]);
+  const doc = state();
+  delete doc.entries[WT].marked_label;
+  delete doc.entries[WT].original_label;
+  fs.writeFileSync(path.join(STATE_DIR, "state.json"), JSON.stringify(doc));
+  fs.writeFileSync(path.join(sandbox, "workspace-label"), "demo");
+  reset();
+  wtdc(["startup"]);
+  assert.match(calls("herdr"), /worktree list --cwd .*worktrees\/demo/);
+  assert.match(calls("herdr"), /workspace rename w9 🐳 demo/);
+  assert.equal(state().entries[WT].marked_label, "🐳 demo");
 });
 
 test("install-shell points Herdr at the dispatcher, keeps a backup, and reloads", () => {

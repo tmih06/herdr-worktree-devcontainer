@@ -136,10 +136,8 @@ check 'the worktree is marked in the sidebar' 'yes' \
     let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
       try {
         const w = JSON.parse(s).result.workspace;
-        // The exact mark, not "some field called name is present": this is the one thing
-        // that makes a containerised worktree recognisable in the sidebar.
-        const t = (w.tokens || {}).name || "";
-        process.stdout.write(t.includes("real") ? "yes" : "no (" + t + ")");
+        const label = w.label || "";
+        process.stdout.write(label.startsWith("🐳 ") && label.includes("real") ? "yes" : "no (" + label + ")");
       } catch { process.stdout.write("no (unreadable)"); } })')"
 
 note "git works inside the container"
