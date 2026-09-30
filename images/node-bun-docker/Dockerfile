@@ -40,6 +40,7 @@ LABEL devcontainer.metadata='[{"privileged":true,"init":true,"entrypoint":"/usr/
 
 VOLUME ["/var/lib/docker", "/var/lib/containerd"]
 ENTRYPOINT ["/usr/local/share/docker-init.sh"]
+CMD ["sleep", "infinity"]
 
 USER ${USER_NAME}
 WORKDIR /workspaces
