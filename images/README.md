@@ -55,7 +55,7 @@ machine instead.
 # by template name, resolved through manifest.json
 export WTDC_TEMPLATE=node-bun
 
-# Node 24, latest Bun at build time, Docker CLI and Compose, Make, direnv
+# Node 24, latest Bun at build time, Docker-in-Docker, Compose, Make, direnv
 export WTDC_TEMPLATE=node-bun-docker
 
 # or straight at an image
@@ -72,17 +72,35 @@ WTDC_IMAGE_REMOTE_USER=dev
 The plugin pulls the image once if it is not local, so the first provision of a
 template pays the pull and every one after that does not.
 
-`node-bun-docker` includes the Docker client and Compose plugin. To run Docker
-commands, connect it to a daemon. For a local Docker daemon, add this mount to
-your `devcontainer.json`:
+`node-bun-docker` includes Docker Engine, its client, Compose, and Buildx.
+It starts a dedicated Docker daemon inside the dev container, and `dev` can
+run `docker` without sudo. A minimal config is enough:
 
 ```json
-"mounts": ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
+{
+  "image": "ghcr.io/tmih06/herdr-devcontainer-node-bun-docker:latest",
+  "remoteUser": "dev"
+}
 ```
 
-The `dev` user may need `sudo docker ...` if its group cannot access the host
-socket. Access to that socket also grants control over the host Docker daemon,
-so only mount it in containers you trust. The image does not start a daemon.
+The image's `devcontainer.metadata` supplies privileged mode, an init process,
+daemon startup, and separate persistent volumes for `/var/lib/docker` and
+`/var/lib/containerd`, scoped by `${devcontainerId}`. This adds no features or
+per-workspace image build. Docker images, containers, and networks belong to
+the inner daemon; remove any host `/var/run/docker.sock` mount when switching
+to this template. Docker-in-Docker requires privileged mode.
+
+For a plain Docker invocation, supply the runtime flags yourself:
+
+```sh
+docker run --rm -it --privileged --init \
+  --mount type=volume,source=wtdc-dind-docker,target=/var/lib/docker \
+  --mount type=volume,source=wtdc-dind-containerd,target=/var/lib/containerd \
+  ghcr.io/tmih06/herdr-devcontainer-node-bun-docker:latest bash
+```
+
+Startup waits for the daemon to become ready and reports failures with its
+log, also available at `/var/log/dockerd.log`.
 Interactive Bash shells load direnv; run `direnv allow` in a project to approve
 its `.envrc`.
 `bun@latest` is resolved when GitHub Actions builds the image; rebuild it to
@@ -111,6 +129,7 @@ table is what each one _adds_ — pick a row and you also get the first.
 | **Node 24 LTS** + corepack                    | —                               | ✅     | ✅         | ✅                | —        | —      |
 | **Bun**                                       | —                               | —      | ✅         | ✅ latest         | —        | —      |
 | **Docker CLI + Compose + Buildx**             | —                               | —      | —          | ✅                | —        | —      |
+| **Docker-in-Docker daemon**                   | —                               | —      | —          | ✅                | —        | —      |
 | **Make and direnv**                           | —                               | —      | —          | ✅                | —        | —      |
 | **CPython 3** + venv + pip                    | —                               | —      | —          | —                 | ✅       | —      |
 | **`uv`**                                      | —                               | —      | —          | —                 | ✅       | —      |
@@ -171,7 +190,7 @@ building a useless `-uid` copy of the image.
 
 ## CI
 
-`.github/workflows/images.yml` has three jobs:
+`.github/workflows/images.yml` builds and checks the images:
 
 - **plan** — reads `manifest.json` and emits the build matrix. A broken manifest
   fails in seconds rather than after a base image has been through a full build.
@@ -182,6 +201,10 @@ building a useless `-uid` copy of the image.
 - **verify** — after a successful push, runs `herdr --version` inside every
   published image, so a broken tag fails the workflow instead of failing
   someone's first provision.
+- **verify-dind** — builds the base and `node-bun-docker` on native amd64 and
+  arm64 runners, including on pull requests. Checks daemon startup, nested
+  builds and containers, Compose, restart, and a minimal Dev Container config
+  that relies on the image metadata.
 
 Tags are `ghcr.io/tmih06/herdr-devcontainer-<name>:latest` by default; override
 with the `workflow_dispatch` `tag` input. Pull requests build but do not push.

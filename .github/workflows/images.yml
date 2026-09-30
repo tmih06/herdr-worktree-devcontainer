@@ -158,6 +158,37 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  # Exercise DinD on native runners, including PRs, without publishing test images.
+  verify-dind:
+    name: Docker-in-Docker ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install verification tools
+        run: |
+          npm install --global @devcontainers/cli
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck images/node-bun-docker/docker-init.sh tests/dind-smoke.sh
+      - name: Build images on the runner
+        run: |
+          docker build --tag wtdc-base:verify images/base
+          docker build --build-arg BASE_IMAGE=wtdc-base:verify --tag wtdc-node-bun-docker:verify images/node-bun-docker
+      - name: Verify bundled Docker-in-Docker
+        timeout-minutes: 10
+        run: bash tests/dind-smoke.sh wtdc-node-bun-docker:verify
+
   # Runs each template on each architecture, natively. Verifying on the amd64 runner alone
   # would only ever test the amd64 half: `docker run <tag>` picks the image matching the
   # daemon, so an arm64-only regression — a layer that fails to unpack, a binary built for
@@ -228,7 +259,7 @@ jobs:
               done
             fi
             if [ "$name" = node-bun-docker ]; then
-              for tool in git make docker; do
+              for tool in git make docker dockerd; do
                 if ! docker run --rm --platform "$platform" --entrypoint "$tool" "$ref" --version; then
                   echo "::error::$ref cannot run $tool on $platform"
                   fail=1
