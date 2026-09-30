@@ -28,7 +28,7 @@
       "name": "node-bun-docker",
       "dir": "images/node-bun-docker",
       "base": "base",
-      "description": "base plus Node 24, latest Bun, Docker CLI and Compose, Make, and direnv"
+      "description": "base plus Node 24, latest Bun, Docker-in-Docker with Compose and Buildx, Make, and direnv"
     },
     {
       "name": "python",
