@@ -19,7 +19,9 @@ cleanup() {
     if [ "${failed:-1}" -ne 0 ]; then
       docker logs "$container" || true
       docker exec -u root "$container" cat /var/log/dockerd.log || true
-      docker cp "$container:/var/log/dockerd.log" "$workspace/dockerd.log" >/dev/null 2>&1 && cat "$workspace/dockerd.log" || true
+      if docker cp "$container:/var/log/dockerd.log" "$workspace/dockerd.log" >/dev/null 2>&1; then
+        cat "$workspace/dockerd.log" || true
+      fi
     fi
     docker rm -f "$container" >/dev/null
     if [ "${#volumes[@]}" -gt 0 ]; then
