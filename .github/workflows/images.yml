@@ -259,7 +259,7 @@ jobs:
               done
             fi
             if [ "$name" = node-bun-docker ]; then
-              for tool in git make docker dockerd; do
+              for tool in git make docker dockerd cloudflared; do
                 if ! docker run --rm --platform "$platform" --entrypoint "$tool" "$ref" --version; then
                   echo "::error::$ref cannot run $tool on $platform"
                   fail=1

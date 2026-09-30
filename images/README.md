@@ -55,7 +55,7 @@ machine instead.
 # by template name, resolved through manifest.json
 export WTDC_TEMPLATE=node-bun
 
-# Node 24, latest Bun at build time, Docker-in-Docker, Compose, Make, direnv
+# Node 24, latest Bun at build time, Docker-in-Docker, Compose, Make, direnv, cloudflared
 export WTDC_TEMPLATE=node-bun-docker
 
 # or straight at an image
@@ -72,7 +72,8 @@ WTDC_IMAGE_REMOTE_USER=dev
 The plugin pulls the image once if it is not local, so the first provision of a
 template pays the pull and every one after that does not.
 
-`node-bun-docker` includes Docker Engine, its client, Compose, and Buildx.
+`node-bun-docker` includes Docker Engine, its client, Compose, Buildx, and
+`cloudflared` for Cloudflare Tunnel.
 It starts a dedicated Docker daemon inside the dev container, and `dev` can
 run `docker` without sudo. A minimal config is enough:
 
@@ -105,6 +106,8 @@ Interactive Bash shells load direnv; run `direnv allow` in a project to approve
 its `.envrc`.
 `bun@latest` is resolved when GitHub Actions builds the image; rebuild it to
 pick up later Bun releases.
+`cloudflared` is installed from Cloudflare's stable APT repository at build time.
+To tunnel a local development server, run `cloudflared tunnel --url http://localhost:3000`.
 
 Naming a template **replaces** the `image` in your own `devcontainer.json` and
 drops its `features`, which the plugin reports by name. `WTDC_TEMPLATE` is blank
@@ -131,6 +134,7 @@ table is what each one _adds_ — pick a row and you also get the first.
 | **Docker CLI + Compose + Buildx**             | —                               | —      | —          | ✅                | —        | —      |
 | **Docker-in-Docker daemon**                   | —                               | —      | —          | ✅                | —        | —      |
 | **Make and direnv**                           | —                               | —      | —          | ✅                | —        | —      |
+| **cloudflared (Cloudflare Tunnel)**           | —                               | —      | —          | ✅                | —        | —      |
 | **CPython 3** + venv + pip                    | —                               | —      | —          | —                 | ✅       | —      |
 | **`uv`**                                      | —                               | —      | —          | —                 | ✅       | —      |
 | **rustup** stable, minimal profile            | —                               | —      | —          | —                 | —        | ✅     |

@@ -13,13 +13,16 @@ RUN set -eux; \
     npm install -g corepack bun@latest; \
     corepack enable; \
     install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /etc/apt/keyrings/cloudflare-main.gpg; \
+    chmod a+r /etc/apt/keyrings/cloudflare-main.gpg; \
+    printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' > /etc/apt/sources.list.d/cloudflared.list; \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
     chmod a+r /etc/apt/keyrings/docker.asc; \
     printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
       "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
       "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.sources; \
     apt-get update; \
-    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io iptables docker-buildx-plugin docker-compose-plugin; \
+    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io iptables docker-buildx-plugin docker-compose-plugin cloudflared; \
     usermod -aG docker "${USER_NAME}"; \
     git --version; \
     node --version; \
@@ -29,6 +32,7 @@ RUN set -eux; \
     docker compose version; \
     make --version; \
     direnv version; \
+    cloudflared --version; \
     printf '\n# Load approved .envrc files in interactive Bash shells.\neval "$(direnv hook bash)"\n' >> "/home/${USER_NAME}/.bashrc"; \
     rm -rf /var/lib/apt/lists/*
 
