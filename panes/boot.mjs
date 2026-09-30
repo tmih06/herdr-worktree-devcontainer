@@ -35,6 +35,7 @@ import { loadConfig } from "../lib/wtdc/config.mjs";
 import { get as stateFor } from "../lib/wtdc/state.mjs";
 import { enterContainerShell } from "../lib/wtdc/containerShell.mjs";
 import { closePane, isLastPane, openHostTab } from "../lib/wtdc/herdr.mjs";
+import { failureRows, setupLog } from "../lib/wtdc/setupLog.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, "..");
@@ -75,6 +76,7 @@ const state = {
   log: [],
   pullProgress: new DockerPullProgress(),
 };
+const log = setupLog(checkout);
 
 const byKey = Object.fromEntries(PHASES.map((p) => [p.key, p]));
 
@@ -123,7 +125,9 @@ function render() {
   if (state.log.length) {
     lines.push("");
     lines.push(`  ${C.dim}── ${state.failed ? "output" : "detail"} ──${C.reset}`);
-    for (const l of state.log.slice(-LOG_LINES)) {
+    for (const l of state.failed
+      ? failureRows(state.log, LOG_LINES)
+      : state.log.slice(-LOG_LINES)) {
       lines.push(`  ${state.failed ? C.red : C.dim}${l}${C.reset}`);
     }
   }
@@ -134,6 +138,7 @@ function render() {
     lines.push(
       `  run ${C.dim}herdr plugin action invoke worktree-devcontainer.provision${C.reset} to retry.`,
     );
+    if (log) lines.push(`  ${C.dim}Full log: ${log.file}${C.reset}`);
   } else if (state.cancelled) {
     lines.push(`  ${C.yellow}Cancelled.${C.reset} No container was created.`);
   } else if (state.done) {
@@ -213,6 +218,7 @@ function consume(stream) {
     render();
   };
   stream.on("data", (chunk) => {
+    log?.append(chunk);
     const next = outputRows(partial, chunk.toString());
     partial = next.partial;
     show(next.rows);
@@ -328,6 +334,7 @@ const finish = (code) => {
 child.on("error", (err) => {
   state.failed = true;
   state.log.push(String(err.message || err));
+  log?.append(`${err.message || err}\n`);
   render();
   leave(1);
 });

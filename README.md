@@ -256,6 +256,16 @@ Other workspace paths still refer to the actual worktree. Relative commands such
 as `sh .devcontainer/script.sh` retain their normal worktree-relative behavior.
 With `WTDC_CONFIG_SOURCE=worktree`, initialization uses the worktree's own files.
 
+Local features such as `./features/cli-tools` are copied from the selected config's
+`.devcontainer` directory into a per-worktree snapshot. The CLI builds their image
+there, then starts it against the actual worktree. Initialization commands, workspace
+mounts, and lifecycle commands still use the actual checkout. This also supports
+main-checkout features that are absent from an older worktree.
+
+If setup fails, the screen shows the error before the stack trace and the path to
+a complete private log under the plugin state directory's `logs` folder. The log
+remains available after the setup pane closes.
+
 The simplest version that works, and the one this repository uses for itself:
 
 ```jsonc

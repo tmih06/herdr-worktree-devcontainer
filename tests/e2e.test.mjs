@@ -132,6 +132,10 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+if [ "$sub" = "build" ] && [ -n "$WTDC_STUB_BUILD_FAIL" ]; then
+  echo 'local feature installation failed' >&2
+  exit 23
+fi
 [ "$sub" = "up" ] || exit 0
 if [ -n "\${WTDC_STUB_RUN_INIT:-}" ]; then
   WTDC_TEST_CONFIG="$merged" WTDC_TEST_WORKSPACE="$workspace" node --input-type=module -e '
@@ -1010,6 +1014,111 @@ test("worktree-sourced initialization assets retain normal workspace paths", () 
   const merged = JSON.parse(fs.readFileSync(state().entries[checkout].merged_config, "utf8"));
   assert.match(merged.initializeCommand, /\$\{localWorkspaceFolder\}\/\.devcontainer/);
   assert.equal(fs.readFileSync(path.join(assets, "bin", "btop"), "utf8"), "local-tool");
+});
+
+test("local features build from a snapshot before the real workspace starts", () => {
+  const checkout = path.join(sandbox, "local-feature-worktree");
+  const assets = path.join(checkout, ".devcontainer");
+  const feature = path.join(assets, "features", "cli-tools");
+  fs.mkdirSync(feature, { recursive: true });
+  fs.writeFileSync(
+    path.join(feature, "devcontainer-feature.json"),
+    '{"id":"cli-tools","version":"1.0.0","name":"CLI tools"}',
+  );
+  fs.writeFileSync(path.join(feature, "install.sh"), "#!/bin/sh\necho local-feature\n");
+  fs.writeFileSync(
+    path.join(assets, "devcontainer.json"),
+    JSON.stringify({
+      image: "debian:12",
+      features: { "./features/cli-tools": { version: "test" } },
+      remoteUser: "dev",
+      containerUser: "root",
+      initializeCommand: "echo ${localWorkspaceFolder}",
+      workspaceFolder: "/workspaces/${localWorkspaceFolderBasename}",
+    }),
+  );
+  const before = calls("devcontainer").length;
+  const res = wtdc(["provision", checkout], { WTDC_CONFIG_SOURCE: "worktree" });
+  assert.equal(res.status, 0, res.stderr);
+  const entry = state().entries[checkout];
+  const invocations = calls("devcontainer").slice(before).trim().split("\n");
+  const build = invocations.find((line) => line.startsWith("build "));
+  assert.ok(build, "local features require a separate CLI build under a matching workspace root");
+  const workspace = build.match(/--workspace-folder (\S+)/)[1];
+  const configPath = build.match(/--config (\S+)/)[1];
+  assert.notEqual(workspace, checkout);
+  assert.equal(configPath, path.join(workspace, ".devcontainer", "devcontainer.json"));
+  const staged = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.deepEqual(staged.features, { "./features/cli-tools": { version: "test" } });
+  assert.equal(staged.remoteUser, "dev");
+  assert.equal(staged.containerUser, "root");
+  assert.match(
+    fs.readFileSync(path.join(workspace, ".devcontainer/features/cli-tools/install.sh"), "utf8"),
+    /local-feature/,
+  );
+  const merged = JSON.parse(fs.readFileSync(entry.merged_config, "utf8"));
+  assert.deepEqual(merged.features, {});
+  assert.match(merged.image, /^wtdc-features-/);
+  assert.equal(merged.initializeCommand, "echo ${localWorkspaceFolder}");
+  assert.equal(merged.workspaceFolder, "/workspaces/${localWorkspaceFolderBasename}");
+  assert.ok(
+    invocations.find((line) => line.startsWith("up ")).includes(`--workspace-folder ${checkout}`),
+  );
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(assets, "devcontainer.json"), "utf8")).features,
+    { "./features/cli-tools": { version: "test" } },
+  );
+});
+
+test("main-checkout local features work in an older worktree and a failed build never starts it", () => {
+  const repo = path.join(sandbox, "feature-main-repo");
+  const checkout = path.join(sandbox, "feature-old-worktree");
+  fs.mkdirSync(repo);
+  git(["init", "-q", "-b", "main"], repo);
+  git(["config", "user.email", "t@t.t"], repo);
+  git(["config", "user.name", "t"], repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "old checkout\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-qm", "init"], repo);
+  git(["worktree", "add", "-q", "-b", "old", checkout], repo);
+  const assets = path.join(repo, ".devcontainer");
+  const feature = path.join(assets, "features", "cli-tools");
+  fs.mkdirSync(feature, { recursive: true });
+  fs.writeFileSync(
+    path.join(feature, "devcontainer-feature.json"),
+    '{"id":"cli-tools","version":"1.0.0","name":"CLI tools"}',
+  );
+  fs.writeFileSync(path.join(feature, "install.sh"), "#!/bin/sh\necho main-checkout-feature\n");
+  fs.writeFileSync(
+    path.join(assets, "devcontainer.json"),
+    JSON.stringify({ image: "debian:12", features: { "./features/cli-tools": {} } }),
+  );
+  const before = calls("devcontainer").length;
+  const failed = wtdc(["provision", checkout], {
+    WTDC_CONFIG_SOURCE: "main",
+    WTDC_STUB_BUILD_FAIL: "1",
+  });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /local feature installation failed/);
+  const failedCalls = calls("devcontainer").slice(before);
+  assert.match(failedCalls, /^build /m);
+  assert.doesNotMatch(failedCalls, /^up /m);
+  assert.ok(fs.existsSync(path.join(checkout, ".git")));
+  assert.equal(fs.existsSync(path.join(checkout, ".devcontainer")), false);
+  const ready = wtdc(["provision", checkout], { WTDC_CONFIG_SOURCE: "main" });
+  assert.equal(ready.status, 0, ready.stderr);
+  const entry = state().entries[checkout];
+  const descriptor = JSON.parse(
+    fs.readFileSync(path.join(path.dirname(entry.merged_config), "feature-build.json"), "utf8"),
+  );
+  assert.match(
+    fs.readFileSync(
+      path.join(descriptor.workspace, ".devcontainer/features/cli-tools/install.sh"),
+      "utf8",
+    ),
+    /main-checkout-feature/,
+  );
+  assert.equal(fs.existsSync(path.join(checkout, ".devcontainer")), false);
 });
 
 test.after(() => {
