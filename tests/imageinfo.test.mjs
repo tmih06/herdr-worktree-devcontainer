@@ -22,16 +22,45 @@ function imageFixture(t, mode) {
 const args = process.argv.slice(2);
 const mode = process.env.IMAGE_TEST_MODE;
 if (args[0] === "image" && args[1] === "inspect") {
-  if (mode === "daemon" || mode === "absent") {
+  if (mode === "daemon" || mode === "absent" || mode === "fallback-absent") {
     console.error(mode === "daemon" ? "Cannot connect to the Docker daemon" : "Error response from daemon: No such image: fixture:latest");
     process.exit(1);
   }
   const format = args[args.indexOf("--format") + 1];
-  if (format === "{{.Size}}|{{json .RepoDigests}}") {
-    console.log(mode === "no-digest" ? "1048576|[]" : '1048576|["fixture@sha256:local"]');
+  if (format.startsWith("{{.Size}}|{{json .RepoDigests}}")) {
+    const metadata = mode === "no-digest" || mode === "fallback-no-digest" ? "1048576|[]" : '1048576|["fixture@sha256:local"]';
+    console.log(metadata + (format.endsWith("|{{.Id}}") ? "|sha256:config-current" : ""));
   } else if (format === "{{.Os}}/{{.Architecture}}") {
     console.log("linux/" + process.arch.replace("x64", "amd64"));
   }
+  process.exit(0);
+}
+if (mode.startsWith("fallback-")) {
+  if (args[0] === "buildx") {
+    console.error("docker: unknown command: docker buildx");
+    process.exit(1);
+  }
+  if (mode === "fallback-unavailable") {
+    console.error("registry unavailable");
+    process.exit(1);
+  }
+  if (mode === "fallback-malformed") {
+    console.log("not json");
+    process.exit(0);
+  }
+  const arch = process.arch.replace("x64", "amd64");
+  const other = arch === "arm64" ? "amd64" : "arm64";
+  const manifest = digest => ({config: {digest}, layers: [{size: 1048576}]});
+  const key = mode === "fallback-schema-v2" ? "SchemaV2Manifest" : "OCIManifest";
+  const entries = [{Descriptor: {platform: {os: "linux", architecture: other}}, [key]: manifest("sha256:config-current")}];
+  if (mode !== "fallback-no-platform") {
+    entries.push({Descriptor: {platform: {os: "linux", architecture: arch}}, [key]: manifest(mode === "fallback-stale" ? "sha256:config-new" : "sha256:config-current")});
+  }
+  if (mode === "fallback-legacy") {
+    entries[1].Platform = entries[1].Descriptor.platform;
+    delete entries[1].Descriptor;
+  }
+  console.log(JSON.stringify(mode === "fallback-schema-v2" || mode === "fallback-legacy" ? entries[1] : entries));
   process.exit(0);
 }
 if (mode === "registry" || mode === "buildx") {
@@ -84,7 +113,7 @@ try:
         ready, _, _ = select.select([master], [], [], 0.05)
         if ready:
             output += os.read(master, 65536)
-        if any(s in output for s in [b"local state unknown", b"already pulled", b"not on this machine", b"local image check failed"]):
+        if any(s in output for s in [b"local state unknown", b"already pulled", b"not on this machine", b"local image check failed", b"newer image published"]):
             break
     os.write(master, b"n")
     child.wait(timeout=2)
@@ -129,6 +158,63 @@ test("missing Buildx reports its error while retaining known local availability"
   assert.equal(described.localState, "present");
   assert.match(described.reason, /unknown command: docker buildx/);
   assert.match(f.prompt(), /already pulled.*published version unavailable.*docker buildx/);
+});
+
+test("without Buildx, the host's manifest config identifies an up-to-date image", (t) => {
+  const f = imageFixture(t, "fallback-current");
+  assert.equal(f.describe().state, "up-to-date");
+  assert.match(f.prompt(), /already pulled, same as published/);
+});
+
+test("without Buildx, a changed host manifest config reports an available update", (t) => {
+  const f = imageFixture(t, "fallback-stale");
+  assert.equal(f.describe().state, "update-available");
+  assert.match(f.prompt(), /newer image published/);
+});
+
+test("the manifest fallback supports a single Docker schema v2 manifest", (t) => {
+  const f = imageFixture(t, "fallback-schema-v2");
+  assert.equal(f.describe().state, "up-to-date");
+});
+
+test("the manifest fallback supports Docker's legacy Platform field", (t) => {
+  const f = imageFixture(t, "fallback-legacy");
+  assert.equal(f.describe().state, "up-to-date");
+});
+
+test("the config fallback can compare a local image without RepoDigests", (t) => {
+  const f = imageFixture(t, "fallback-no-digest");
+  const described = f.describe();
+  assert.equal(described.state, "up-to-date");
+  assert.equal(described.reason, "");
+});
+
+test("the manifest fallback supplies the compressed download size for an absent image", (t) => {
+  const f = imageFixture(t, "fallback-absent");
+  const described = f.describe();
+  assert.equal(described.state, "absent");
+  assert.equal(described.size, "1 MB");
+});
+
+test("a manifest for another architecture cannot imply a current image", (t) => {
+  const f = imageFixture(t, "fallback-no-platform");
+  const described = f.describe();
+  assert.equal(described.state, "unknown");
+  assert.match(described.reason, /no manifest for linux\//);
+});
+
+test("malformed manifest output cannot imply a current image", (t) => {
+  const f = imageFixture(t, "fallback-malformed");
+  const described = f.describe();
+  assert.equal(described.state, "unknown");
+  assert.match(described.reason, /invalid manifest/);
+});
+
+test("if the fallback also fails, report the registry failure", (t) => {
+  const f = imageFixture(t, "fallback-unavailable");
+  const described = f.describe();
+  assert.equal(described.state, "unknown");
+  assert.match(described.reason, /registry unavailable/);
 });
 
 test("a failed Docker inspection is unknown availability, rather than an absent image", (t) => {

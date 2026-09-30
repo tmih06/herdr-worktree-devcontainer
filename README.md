@@ -83,9 +83,12 @@ is resolved _after_ the first frame and fills in when it arrives, so a slow
 registry never holds the question hostage — and when it cannot be answered the
 line says so rather than implying the image is current.
 
-Registry comparison uses Docker Buildx. If Buildx is missing, the registry is
-unreachable, or a local image has no registry digest, the line still says
-`already pulled` and explains why comparison is unavailable. A failed local Docker
+Registry comparison prefers Docker Buildx and falls back to Docker's built-in
+`manifest inspect --verbose` when the Buildx lookup fails. The fallback compares
+the published configuration for this host's architecture to the local image ID,
+so it does not mistake another architecture's digest for a local image update.
+If both registry checks fail, the line still says `already pulled` and explains
+why comparison is unavailable. A failed local Docker
 inspection reports `local image check failed` with the error; only Docker's
 `No such image` response means the image needs pulling.
 
