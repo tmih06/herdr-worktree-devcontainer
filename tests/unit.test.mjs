@@ -567,7 +567,7 @@ test("planProvision: an untouched field leaves the config's own image alone", as
   assert.equal(plan.imageSource, "devcontainer.json");
 });
 
-test("a provision is refused when the image on this machine cannot run here", async () => {
+test("a provision is refused when the image on this machine cannot run here", async (t) => {
   // A multi-arch tag can still resolve, locally, to a variant this host cannot execute —
   // an explicit `pull --platform`, a build run for another arch, or a copied cache. The
   // uid-remap build the CLI does puts `FROM` on that image, the shell inside it will not
@@ -575,7 +575,7 @@ test("a provision is refused when the image on this machine cannot run here", as
   // minified stack trace. Refusing up front, with the fix, is the difference between a
   // diagnosable failure and a puzzle.
   //
-  // Driven through the real `docker image inspect` against an image built for the other
+  // Driven through the real `docker image inspect` against an image imported for the other
   // architecture, because the whole claim is about what docker reports.
   const docker = (() => {
     try {
@@ -587,55 +587,42 @@ test("a provision is refused when the image on this machine cannot run here", as
       return "";
     }
   })();
-  if (!docker) return; // no docker here; nothing to prove
+  if (!docker) {
+    t.skip("Docker daemon unavailable");
+    return;
+  }
   const host = docker;
   const other = host === "arm64" ? "amd64" : "arm64";
 
-  const dir = tmp();
-  const src = path.join(dir, "devcontainer.json");
-  fs.writeFileSync(src, '{ "image": "wtdc-arch-probe:wrong" }');
-
-  // FROM the other architecture with nothing to execute, so this needs no emulation — the
-  // only way to get such an image onto a machine that could not run one.
-  const ctx = tmp();
-  fs.writeFileSync(
-    path.join(ctx, "Dockerfile"),
-    `FROM --platform=linux/${other} scratch\nLABEL probe=1\n`,
-  );
-  const built = (() => {
-    try {
-      execFileSync(
-        "docker",
-        ["build", "--platform", `linux/${other}`, "-t", "wtdc-arch-probe:wrong", ctx],
-        { stdio: ["ignore", "ignore", "pipe"] },
-      );
-      return null;
-    } catch (err) {
-      return String(err.stderr || err.message);
-    }
-  })();
-  if (built !== null) return; // cannot make the image here; nothing to prove
+  const image = `wtdc-arch-probe:wrong-${process.pid}`;
+  // The legacy builder can ignore --platform for FROM scratch and stamp the
+  // host architecture instead. Import an empty tar archive with an explicit
+  // platform: no build plugin, registry access, or emulation is needed.
+  execFileSync("docker", ["image", "import", "--platform", `linux/${other}`, "-", image], {
+    input: Buffer.alloc(1024),
+    stdio: ["pipe", "ignore", "pipe"],
+  });
 
   try {
     const { platformMismatch, localPlatform, hostPlatform, describeImage } =
       await import("../lib/wtdc/imageInfo.mjs");
 
     assert.equal(hostPlatform(), `linux/${host}`);
-    assert.equal(localPlatform("wtdc-arch-probe:wrong"), `linux/${other}`);
-    assert.equal(platformMismatch("wtdc-arch-probe:wrong"), true, "the wrong one is caught");
+    assert.equal(localPlatform(image), `linux/${other}`);
+    assert.equal(platformMismatch(image), true, "the wrong one is caught");
     assert.equal(
-      platformMismatch("wtdc-arch-probe:not-built"),
+      platformMismatch(`${image}-not-built`),
       false,
       "an absent image is not a mismatch",
     );
     assert.equal(platformMismatch(""), false);
 
-    const described = describeImage("wtdc-arch-probe:wrong");
+    const described = describeImage(image);
     assert.equal(described.wrongPlatform, true, "and the prompt is told, before anyone answers");
     assert.equal(described.localPlatform, `linux/${other}`);
     assert.equal(described.hostPlatform, `linux/${host}`);
   } finally {
-    execFileSync("docker", ["image", "rm", "-f", "wtdc-arch-probe:wrong"], { stdio: "ignore" });
+    execFileSync("docker", ["image", "rm", image], { stdio: "ignore" });
   }
 });
 
