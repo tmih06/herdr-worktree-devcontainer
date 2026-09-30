@@ -76,7 +76,7 @@ test "$(docker exec "$raw_container" docker run --rm wtdc-dind-smoke:local)" = n
 mkdir -p "$workspace/.devcontainer"
 jq -n --arg image "$image" '{image: $image, remoteUser: "dev", updateRemoteUserUID: false}' \
   > "$workspace/.devcontainer/devcontainer.json"
-devcontainer up --workspace-folder "$workspace" --log-level error > "$workspace/up.json"
+devcontainer up --workspace-folder "$workspace" > "$workspace/up.json"
 dev_container=$(jq -r .containerId "$workspace/up.json")
 test "$(docker inspect --format '{{.HostConfig.Privileged}}' "$dev_container")" = true
 test "$(docker inspect --format '{{.HostConfig.Init}}' "$dev_container")" = true
