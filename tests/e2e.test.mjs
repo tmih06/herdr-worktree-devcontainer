@@ -122,13 +122,36 @@ fs.writeFileSync(
   `#!/usr/bin/env bash
 echo "$*" >> "$WTDC_SANDBOX/calls/devcontainer"
 sub="$1"; shift
+merged=""; workspace=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --config|--mount) echo "$2" >> "$WTDC_SANDBOX/calls/mounts"; shift 2 ;;
+    --config) merged="$2"; echo "$2" >> "$WTDC_SANDBOX/calls/mounts"; shift 2 ;;
+    --workspace-folder) workspace="$2"; shift 2 ;;
+    --mount) echo "$2" >> "$WTDC_SANDBOX/calls/mounts"; shift 2 ;;
     *) shift ;;
   esac
 done
 [ "$sub" = "up" ] || exit 0
+if [ -n "\${WTDC_STUB_RUN_INIT:-}" ]; then
+  WTDC_TEST_CONFIG="$merged" WTDC_TEST_WORKSPACE="$workspace" node --input-type=module -e '
+    import fs from "node:fs";
+    import { spawnSync } from "node:child_process";
+    const config = JSON.parse(fs.readFileSync(process.env.WTDC_TEST_CONFIG, "utf8"));
+    const command = config.initializeCommand.replaceAll("\${localWorkspaceFolder}", process.env.WTDC_TEST_WORKSPACE);
+    const result = spawnSync("/bin/sh", ["-c", command], {cwd: process.env.WTDC_TEST_WORKSPACE, encoding: "utf8"});
+    process.stderr.write(result.stderr || "");
+    if (result.status !== 0) {
+      console.log(JSON.stringify({outcome: "error", message: "Command failed: " + command, description: "The initializeCommand in the devcontainer.json failed."}));
+      process.exit(1);
+    }
+  ' || exit 1
+fi
+if [ -n "\${WTDC_STUB_INIT_FAIL:-}" ]; then
+  printf '%s\\n' 'sh: cannot open .devcontainer/host-tools.sh: No such file' >&2
+  printf '%s\\n' 'host initializer diagnostic'
+  printf '%s\\n' '{"outcome":"error","message":"Command failed: /bin/sh -c sh host-tools.sh","description":"The initializeCommand in the devcontainer.json failed."}'
+  exit 1
+fi
 [ -z "$WTDC_STUB_UP_FAIL" ] || exit 23
 printf '{"containerId":"deadbeefcafe","remoteWorkspaceFolder":"/workspaces/demo","remoteUser":"devuser"}'
 `,
@@ -377,6 +400,17 @@ test("a failed provision leaves the worktree retryable", () => {
   const res = wtdc(["provision", WT_BROKEN, "w11", "broken"], { WTDC_STUB_UP_FAIL: "1" });
   assert.notEqual(res.status, 0);
   assert.equal(state().entries[WT_BROKEN], undefined, "no half-written entry may block a retry");
+});
+
+test("a failed initializeCommand reports both streams without an uncaught Node error", () => {
+  const res = wtdc(["provision", WT_BROKEN, "w11", "broken"], { WTDC_STUB_INIT_FAIL: "1" });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /error:.*initializeCommand/);
+  assert.match(res.stderr, /cannot open.*host-tools.sh.*No such file/);
+  assert.match(res.stderr, /Command failed: \/bin\/sh -c sh host-tools.sh/);
+  assert.match(res.stderr, /host initializer diagnostic/);
+  assert.doesNotMatch(res.stderr, /throw new CommandError|CommandError:|Node\.js v/);
+  assert.equal(state().entries[WT_BROKEN], undefined, "failure must remain retryable");
 });
 
 test("an overlay pane is never given a target Herdr would reject", () => {
@@ -842,6 +876,139 @@ test("closePane: a pane that is there gets closed, by id", () => {
   reset();
   assert.equal(paneHelper('herdr.closePane("w1:p1")', { panes: two }), "true");
   assert.match(calls("herdr"), /pane close w1:p1/);
+});
+
+test("main-checkout initialization assets work when the worktree does not contain them", () => {
+  const repo = path.join(sandbox, "init-repo");
+  const checkout = path.join(sandbox, "init-worktree");
+  fs.mkdirSync(repo);
+  git(["init", "-q", "-b", "main"], repo);
+  git(["config", "user.email", "t@t.t"], repo);
+  git(["config", "user.name", "t"], repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "old branch\n");
+  git(["add", "-A"], repo);
+  git(["commit", "-qm", "init"], repo);
+  git(["worktree", "add", "-q", "-b", "test", checkout], repo);
+
+  const assets = path.join(repo, ".devcontainer");
+  fs.mkdirSync(assets);
+  fs.writeFileSync(
+    path.join(assets, "host-tools.sh"),
+    '#!/bin/sh\nset -eu\nmkdir -p "$1/bin"\nprintf host-tool > "$1/bin/btop"\n',
+  );
+  fs.writeFileSync(
+    path.join(assets, "devcontainer.json"),
+    JSON.stringify({
+      image: "debian:12",
+      initializeCommand:
+        "sh '${localWorkspaceFolder}/.devcontainer/host-tools.sh' '${localWorkspaceFolder}/.devcontainer'",
+      mounts: [
+        "type=bind,source=${localWorkspaceFolder}/.devcontainer/bin/btop,target=/usr/local/bin/btop,readonly",
+        {
+          type: "bind",
+          source: "${localWorkspaceFolder}/.devcontainer/bin",
+          target: "/host-tools",
+        },
+      ],
+      remoteEnv: {
+        CODE: "${localWorkspaceFolder}/src",
+        OTHER: "${localWorkspaceFolder}/.devcontainer-other/file",
+      },
+    }),
+  );
+
+  const res = wtdc(["provision", checkout], {
+    WTDC_CONFIG_SOURCE: "main",
+    WTDC_STUB_RUN_INIT: "1",
+    WTDC_SHARE_HERDR_BIN: "0",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  const merged = JSON.parse(fs.readFileSync(state().entries[checkout].merged_config, "utf8"));
+  assert.equal(
+    fs.existsSync(path.join(checkout, ".devcontainer")),
+    false,
+    "the checkout stays pristine",
+  );
+  assert.doesNotMatch(merged.initializeCommand, /\$\{localWorkspaceFolder\}\/\.devcontainer/);
+  const staged = merged.mounts[0].split("source=")[1].split(",target=")[0];
+  assert.equal(fs.readFileSync(staged, "utf8"), "host-tool");
+  assert.equal(merged.mounts[1].source, path.dirname(staged));
+  assert.equal(merged.remoteEnv.CODE, "${localWorkspaceFolder}/src");
+  assert.equal(merged.remoteEnv.OTHER, "${localWorkspaceFolder}/.devcontainer-other/file");
+  assert.equal(
+    fs.existsSync(path.join(assets, "bin")),
+    false,
+    "initialization must not write to the main checkout",
+  );
+
+  const nextCheckout = path.join(sandbox, "init-next-worktree");
+  git(["worktree", "add", "-q", "-b", "next", nextCheckout], repo);
+  fs.writeFileSync(
+    path.join(assets, "host-tools.sh"),
+    '#!/bin/sh\nset -eu\nmkdir -p "$1/bin"\nprintf next-tool > "$1/bin/btop"\n',
+  );
+  const next = wtdc(["provision", nextCheckout], {
+    WTDC_CONFIG_SOURCE: "main",
+    WTDC_STUB_RUN_INIT: "1",
+    WTDC_SHARE_HERDR_BIN: "0",
+  });
+  assert.equal(next.status, 0, next.stderr);
+  const nextMerged = JSON.parse(
+    fs.readFileSync(state().entries[nextCheckout].merged_config, "utf8"),
+  );
+  const nextStaged = nextMerged.mounts[0].split("source=")[1].split(",target=")[0];
+  assert.notEqual(nextStaged, staged);
+  assert.equal(fs.readFileSync(nextStaged, "utf8"), "next-tool");
+  assert.equal(
+    fs.readFileSync(staged, "utf8"),
+    "host-tool",
+    "worktrees must not share generated assets",
+  );
+  const removed = wtdc(["teardown", checkout]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(fs.existsSync(staged), false, "teardown removes its own snapshot");
+  assert.equal(fs.readFileSync(nextStaged, "utf8"), "next-tool");
+  const kept = wtdc(["teardown", nextCheckout], { WTDC_KEEP_CONTAINER: "1" });
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.equal(state().entries[nextCheckout], undefined);
+  assert.equal(
+    fs.readFileSync(nextStaged, "utf8"),
+    "next-tool",
+    "kept containers need their bind sources on restart",
+  );
+  const forced = wtdc(["teardown", nextCheckout, "--force"]);
+  assert.equal(forced.status, 0, forced.stderr);
+  assert.equal(
+    fs.existsSync(nextStaged),
+    false,
+    "force cleanup must reclaim an untracked snapshot",
+  );
+});
+
+test("worktree-sourced initialization assets retain normal workspace paths", () => {
+  const checkout = path.join(sandbox, "local-init-worktree");
+  const assets = path.join(checkout, ".devcontainer");
+  fs.mkdirSync(assets, { recursive: true });
+  fs.writeFileSync(
+    path.join(assets, "host-tools.sh"),
+    '#!/bin/sh\nmkdir -p "$1/bin"\nprintf local-tool > "$1/bin/btop"\n',
+  );
+  fs.writeFileSync(
+    path.join(assets, "devcontainer.json"),
+    JSON.stringify({
+      image: "debian:12",
+      initializeCommand:
+        "sh '${localWorkspaceFolder}/.devcontainer/host-tools.sh' '${localWorkspaceFolder}/.devcontainer'",
+    }),
+  );
+  const res = wtdc(["provision", checkout], {
+    WTDC_CONFIG_SOURCE: "worktree",
+    WTDC_STUB_RUN_INIT: "1",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  const merged = JSON.parse(fs.readFileSync(state().entries[checkout].merged_config, "utf8"));
+  assert.match(merged.initializeCommand, /\$\{localWorkspaceFolder\}\/\.devcontainer/);
+  assert.equal(fs.readFileSync(path.join(assets, "bin", "btop"), "utf8"), "local-tool");
 });
 
 test.after(() => {

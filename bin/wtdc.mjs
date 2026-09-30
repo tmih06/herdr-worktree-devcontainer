@@ -19,7 +19,7 @@ import path from "node:path";
 import { ROOT, insideContainer } from "./../lib/wtdc/context.mjs";
 import { loadConfig, seedUserConfig } from "./../lib/wtdc/config.mjs";
 import { tryRun, have } from "./../lib/wtdc/run.mjs";
-import { step, ok, info, detail, warn, die, notify } from "./../lib/wtdc/ui.mjs";
+import { step, ok, info, detail, warn, die, dieCommand, notify } from "./../lib/wtdc/ui.mjs";
 import { setTomlKey } from "./../lib/wtdc/toml.mjs";
 import { emit, phaseStart } from "./../lib/wtdc/progress.mjs";
 import * as state from "./../lib/wtdc/state.mjs";
@@ -256,9 +256,14 @@ function provision(checkout, workspaceId = "", labelArg = "") {
 
   step("Building and starting the container (this can take a while)");
   emit("up", phaseStart("up") * 100);
-  const up = dc.up(checkout, merged, config, (containerId) => {
-    emit("ready", phaseStart("ready") * 100, containerId ? containerId.slice(0, 12) : "");
-  });
+  let up;
+  try {
+    up = dc.up(checkout, merged, config, (containerId) => {
+      emit("ready", phaseStart("ready") * 100, containerId ? containerId.slice(0, 12) : "");
+    });
+  } catch (err) {
+    dieCommand(err);
+  }
   if (!up.containerId) die("devcontainer up did not report a container id");
 
   const cname = containerNameFor(slug, project);
@@ -339,7 +344,7 @@ function teardown(checkout, force = false) {
   } else {
     // Journal the intent before touching Docker, including an orphan sweep.
     // A killed hook or daemon outage must leave enough information to retry.
-    entry ||= { checkout_path: checkout };
+    entry ||= { checkout_path: checkout, merged_config: dc.mergedPathFor(checkout) };
     state.set(checkout, { ...entry, cleanup_pending: true });
     step("Destroying the container");
     try {
@@ -358,7 +363,9 @@ function teardown(checkout, force = false) {
     }
   }
 
-  if (entry.merged_config) {
+  // Staged assets can be live bind sources. A deliberately kept container
+  // still needs them on restart, even after it is no longer tracked.
+  if (entry.merged_config && !keep) {
     try {
       fs.rmSync(path.dirname(entry.merged_config), { recursive: true, force: true });
     } catch (err) {

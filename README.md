@@ -243,6 +243,16 @@ once, uncommitted, which is where edits actually happen. Set `WTDC_CONFIG_SOURCE
 when a branch legitimately changes its own `devcontainer.json`; the dialog then shows which
 checkout the config came from, and the container is built from that worktree's own copy.
 
+When the main config references `${localWorkspaceFolder}/.devcontainer`, the plugin
+copies the main checkout's `.devcontainer` files into a private directory beside
+that worktree's merged config and rewrites those explicit host paths to the copy.
+This lets `initializeCommand` use scripts such as `host-tools.sh` even when an
+older worktree has no such script. Files created there and the mounts that consume
+them share the same per-worktree directory, which is removed during teardown.
+Other workspace paths still refer to the actual worktree. Relative commands such
+as `sh .devcontainer/script.sh` retain their normal worktree-relative behavior.
+With `WTDC_CONFIG_SOURCE=worktree`, initialization uses the worktree's own files.
+
 The simplest version that works, and the one this repository uses for itself:
 
 ```jsonc
@@ -390,6 +400,8 @@ failure reports an error and retains state and the merged config for retry; one
 failed removal does not prevent attempts to remove the other containers.
 On startup, the plugin retries pending cleanup and cleans tracked containers whose
 checkout paths no longer exist. `WTDC_KEEP_CONTAINER=1` skips automatic removal.
+It also keeps staged config assets that the container may need as bind sources
+on restart; a later forced teardown removes them.
 To retry manually, including for an untracked container at a deleted path:
 
 ```sh
