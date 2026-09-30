@@ -170,14 +170,15 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
 ### Actions
 
-| Action            | What it does                                                                   |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `provision`       | build a container for the current worktree                                     |
-| `status`          | list tracked worktrees and whether their containers run                        |
-| `teardown`        | destroy the current worktree's container                                       |
-| `remove-worktree` | remove the containers and DinD volumes before deleting the Git worktree        |
-| `cleanup`         | retry pending cleanup and reclaim tracked resources whose Git metadata is gone |
-| `install-shell`   | point `terminal.default_shell` at the dispatcher, back up the config, reload   |
+| Action                   | What it does                                                                   |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| `provision`              | build a container for the current worktree                                     |
+| `status`                 | list tracked worktrees and whether their containers run                        |
+| `teardown`               | destroy the current worktree's container                                       |
+| `remove-worktree`        | remove the containers and DinD volumes before deleting the Git worktree        |
+| `cleanup`                | retry pending cleanup and reclaim tracked resources whose Git metadata is gone |
+| `install-native-cleanup` | enable Docker-first ordering in Herdr's native worktree removal                |
+| `install-shell`          | point `terminal.default_shell` at the dispatcher, back up the config, reload   |
 
 ## How it works
 
@@ -395,7 +396,29 @@ so the worktree stays retryable, and cleanup also sweeps containers by Docker's
 `devcontainer.local_folder` label, so a build that died before state was written
 can still be cleaned up.
 
-Use the **Dev container: remove worktree, container and volumes** action to remove
+For Herdr's native right-click **Remove worktree**, first run the **Dev container:
+enable cleanup for native worktree removal** action, or:
+
+```sh
+node bin/wtdc.mjs install-native-cleanup
+```
+
+This installs a Git launcher at `~/.local/bin/git`. Herdr's server must have
+`~/.local/bin` before the original Git executable on its PATH; if it already does,
+the launcher takes effect immediately. The installer refuses to replace an unrelated
+Git executable. Ordinary commands run the original Git directly. Removal of a tracked
+worktree runs Docker cleanup first and leaves Git intact if cleanup fails. Untracked
+worktrees keep Git's normal behavior. `WTDC_ENABLED=0` disables interception, and
+`WTDC_KEEP_CONTAINER=1` still deliberately keeps containers. Removing the installed
+launcher restores the original PATH lookup.
+
+Git can unregister a worktree and delete `.git` before failing to remove the checkout
+directory. Herdr then emits no removal event. The launcher finishes this partial
+deletion only after Docker cleanup, successful verification that Git no longer
+registers the path, and confirmation that the original directory has not been
+replaced. It makes owner-readonly directories writable without following symlinks.
+
+You can also use the **Dev container: remove worktree, container and volumes** action to remove
 a containerised worktree. It checks for uncommitted changes, removes the containers
 and their two plugin-owned DinD volumes, then calls Herdr to remove the Git worktree.
 If Docker cleanup fails, the checkout stays intact. From the host CLI:
@@ -404,9 +427,9 @@ If Docker cleanup fails, the checkout stays intact. From the host CLI:
 node bin/wtdc.mjs remove-worktree <workspace-id>
 ```
 
-Herdr's built-in removal still deletes Git first: its `worktree.removed` event runs
+Without the launcher, Herdr's built-in removal deletes Git first: its `worktree.removed` event runs
 **after the checkout has been deleted**, and Herdr 0.9.1 provides no cancellable
-pre-removal hook. The plugin action is required to guarantee Docker-first ordering.
+pre-removal hook. The launcher or plugin removal action provides Docker-first ordering.
 
 Cleanup records a pending entry and inspects the owned volume mounts before deleting
 any container. Volume names stay in state until cleanup finishes, including after
@@ -437,6 +460,7 @@ never started still needs cleanup by its checkout path.
 
 ```
 bin/wtdc.mjs          CLI: hooks, actions, provision, teardown, status
+bin/git.mjs           pre-removal cleanup for tracked worktrees via the Git launcher
 lib/wtdc/shell.mjs    the dispatcher installed as terminal.default_shell
 lib/wtdc/devcontainer.mjs  config discovery, merge, container lifecycle
 lib/wtdc/containerShell.mjs the container terminal, shared by both routes into one

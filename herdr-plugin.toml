@@ -49,6 +49,12 @@ title = "Dev container: retry interrupted cleanup"
 contexts = ["global", "workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "cleanup"]
 
+[[actions]]
+id = "install-native-cleanup"
+title = "Dev container: enable cleanup for native worktree removal"
+contexts = ["global", "workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "install-native-cleanup"]
+
 # Points terminal.default_shell at the dispatcher, keeping a .bak-before-wtdc copy of
 # the config as it was, and reloads the server. Without this key every new pane runs the
 # user's own shell, so a worktree with a running container still gives host terminals —

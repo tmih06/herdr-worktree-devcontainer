@@ -28,6 +28,7 @@ import * as state from "./../lib/wtdc/state.mjs";
 import * as dc from "./../lib/wtdc/devcontainer.mjs";
 import * as herdr from "./../lib/wtdc/herdr.mjs";
 import * as imageInfo from "./../lib/wtdc/imageInfo.mjs";
+import { installNativeCleanup } from "./../lib/wtdc/nativeCleanup.mjs";
 
 const slugify = (s) =>
   s
@@ -627,6 +628,16 @@ function actionInstallShell() {
   if (rc !== 0) process.exitCode = rc;
 }
 
+function actionInstallNativeCleanup() {
+  try {
+    const file = installNativeCleanup();
+    ok(`installed native worktree cleanup at ${file}`);
+    info("Herdr must resolve this launcher before the original Git executable on PATH.");
+  } catch (err) {
+    die(err.message);
+  }
+}
+
 function actionProvision() {
   const checkout = herdr.contextWorktree();
   if (!checkout) die("this action must be invoked from a worktree workspace");
@@ -785,6 +796,8 @@ function main() {
     }
     case "install-shell":
       return actionInstallShell();
+    case "install-native-cleanup":
+      return actionInstallNativeCleanup();
     case "help":
     case "-h":
     case "--help":
@@ -801,6 +814,7 @@ terminals inside it, keeping the worktree grouped under its repo.
   cleanup                 retry pending or deleted-worktree cleanup
   status
   install-shell           configure Herdr to use the shell dispatcher
+  install-native-cleanup  install Git launcher for native Docker-first removal
   action <id>             plugin action entry point
 `);
       return;
@@ -812,6 +826,7 @@ terminals inside it, keeping the worktree grouped under its repo.
       if (id === "cleanup") return cleanup();
       if (id === "status") return status();
       if (id === "install-shell") return actionInstallShell();
+      if (id === "install-native-cleanup") return actionInstallNativeCleanup();
       return die(`unknown action: ${id || ""}`);
     }
     default:
