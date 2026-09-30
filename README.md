@@ -92,16 +92,19 @@ why comparison is unavailable. A failed local Docker
 inspection reports `local image check failed` with the error; only Docker's
 `No such image` response means the image needs pulling.
 
-That description comes from the same function provisioning uses, so it cannot
-drift from what actually runs. `Features` names what a template would drop, and
-`Setup` says what the build will actually cost — including the part that is easy
-to forget. The Dev Container CLI does not run your image: when the container
-user's uid differs from the host's, it builds a `vsc-…-uid` copy of the image
-first, and on a host with a different uid that is _every_ provision, including
-ones that declare no features and look exactly like a `docker run`. Saying "no
-image build" and then spending half a minute building an image is not a
-description of anything, so the line accounts for it. Where the image does not
-say which uid its user has, the line says so rather than guessing.
+`Features` names what a template would drop. For local features, `Cache` checks
+the same build inputs that provisioning uses and reports a matching feature
+image and, separately, a cached UID/GID-adjusted image. With both cached, `Setup`
+says `reuses cached image — creates a container`. Without a match it describes
+the build; when reuse cannot be checked or supported it explains why. Config,
+local feature file and image-field edits refresh that result. These inspections
+run after the first frame, write no build snapshot and start no container, so a
+busy Docker daemon cannot block the question. Closing it cancels pending checks.
+
+The Dev Container CLI can build a `vsc-…-uid` copy when the container user's uid
+differs from the host's. `Setup` includes that cost unless UID updates are
+disabled or a matching adjusted image is cached. Where the image does not say
+which uid its user has, the line describes that cost as conditional.
 
 `Mounts` names what the container will have of the host's, in the `mounts` array
 of your own config — the devcontainer-native way to borrow a host binary instead

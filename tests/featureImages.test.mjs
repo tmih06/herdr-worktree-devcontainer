@@ -32,8 +32,10 @@ const imageId=ref=>state.images[ref]||(Object.values(state.images).includes(ref)
     path.join(bin, "docker"),
     `#!${process.execPath}\n${common}
 if(args[0]==="image"&&args[1]==="inspect"){
+ if(state.slowInspect){fs.appendFileSync(path.join(path.dirname(file),"inspect-pids"),process.pid+"\\n");Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);}
+ if(state.inspectError){console.error("Cannot connect to the Docker daemon");process.exit(1);}
  const ref=args[2]; const id=imageId(ref);
- if(!id)process.exit(1);
+ if(!id){console.error("No such image: "+ref);process.exit(1);}
  const format=args[args.indexOf("--format")+1];
  if(format==="{{.Id}}")console.log(id);
  else if(format==="{{.Os}}/{{.Architecture}}")console.log("linux/"+process.arch.replace("x64","amd64"));
@@ -133,8 +135,198 @@ process.exit(1);
   }
   const read = () => JSON.parse(fs.readFileSync(data, "utf8"));
   const write = (value) => fs.writeFileSync(data, JSON.stringify(value));
-  return { dir, checkout, start, read, write };
+  function prompt(folder, expected, after = "", extraEnv = {}) {
+    const result = spawnSync(
+      "python3",
+      [
+        "-c",
+        `
+import os, pty, select, subprocess, sys, time
+master, slave = pty.openpty()
+child = subprocess.Popen([sys.argv[1], sys.argv[2]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+os.close(slave)
+output = b""
+try:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 0.05)
+        if ready:
+            output += os.read(master, 65536)
+        if sys.argv[3].encode() in output:
+            break
+    ${after || "pass"}
+    os.write(master, b"n")
+    child.wait(timeout=2)
+finally:
+    if child.poll() is None:
+        os.killpg(child.pid, 9)
+        child.wait()
+    os.close(master)
+sys.stdout.buffer.write(output)
+`,
+        process.execPath,
+        path.join(root, "panes/prompt.mjs"),
+        expected,
+      ],
+      {
+        env: { ...env, ...config, ...extraEnv, WTDC_CHECKOUT: folder },
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout
+      .split("\x1b[H")
+      .at(-1)
+      .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+  }
+  return { dir, checkout, start, read, write, prompt };
 }
+
+test("the dialog reports a shared feature and UID cache hit without building or starting anything", (t) => {
+  const f = fixture(t);
+  const first = f.start(f.checkout("warm"));
+  assert.equal(first.status, 0, first.stderr);
+  const folder = f.checkout("new-worktree");
+  const events = f.read().events;
+  const output = f.prompt(folder, "reuses cached image");
+  assert.match(output, /local feature image cached/);
+  assert.match(output, /UID\/GID-adjusted image cached/);
+  assert.match(output, /reuses cached image/);
+  assert.doesNotMatch(
+    output.slice(output.lastIndexOf("Dev container")),
+    /builds an image|and a uid-matched copy/,
+  );
+  assert.deepEqual(f.read().events, events);
+  assert.equal(fs.existsSync(path.join(f.dir, "merged", "new-worktree")), false);
+});
+
+test("the dialog reports a cold cache and a feature-only hit accurately", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("cold");
+  const cold = f.prompt(folder, "no matching local feature image");
+  assert.match(cold, /builds an image/);
+  assert.deepEqual(f.read().events, []);
+  assert.equal(fs.existsSync(path.join(f.dir, "merged")), false);
+  assert.equal(f.start(folder).status, 0);
+  const state = f.read();
+  for (const tag of Object.keys(state.images))
+    if (tag.startsWith("wtdc-features-") && tag.endsWith("-uid:latest")) delete state.images[tag];
+  f.write(state);
+  const hit = f.prompt(folder, "reuses cached image");
+  assert.match(hit, /local feature image cached/);
+  assert.doesNotMatch(hit, /UID\/GID-adjusted image cached/);
+  assert.match(hit, /uid-matched copy if/);
+});
+
+const waitForFrame = (text) => `deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 0.05)
+        if ready:
+            output += os.read(master, 65536)
+        if ${JSON.stringify(text)}.encode() in output:
+            break`;
+
+test("editing a local feature while the dialog is open invalidates its displayed cache hit", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("feature-edit");
+  assert.equal(f.start(folder).status, 0);
+  const file = path.join(folder, ".devcontainer/features/tools/install.sh");
+  const output = f.prompt(
+    folder,
+    "reuses cached image",
+    `output = b""
+    open(${JSON.stringify(file)}, "a").write("echo changed\\n")
+    ${waitForFrame("no matching local feature image")}`,
+  );
+  assert.match(output, /no matching local feature image/);
+  assert.doesNotMatch(output, /local feature image cached/);
+  assert.equal(f.read().events.filter((event) => event.command === "build").length, 1);
+});
+
+test("an edited base image replaces the old cache status after typing settles", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("image-edit");
+  assert.equal(f.start(folder).status, 0);
+  const state = f.read();
+  state.images["other:latest"] = `sha256:${"b".repeat(64)}`;
+  f.write(state);
+  const output = f.prompt(
+    folder,
+    "reuses cached image",
+    `output = b""
+    os.write(master, b"\\x1b[A\\x15other:latest\\r")
+    ${waitForFrame("no matching local feature image")}`,
+  );
+  assert.match(output, /other:latest/);
+  assert.match(output, /no matching local feature image/);
+  assert.doesNotMatch(output, /local feature image cached/);
+});
+
+test("an unavailable Docker daemon reports an unknown cache rather than a cache miss", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("unavailable");
+  const state = f.read();
+  state.inspectError = true;
+  f.write(state);
+  const output = f.prompt(folder, "cache check failed");
+  assert.match(output, /cache check failed: Cannot connect to the Docker daemon/);
+  assert.doesNotMatch(output, /no matching local feature image|builds an image/);
+});
+
+test("a slow Docker inspection cannot delay the first frame or outlive a declined or closed dialog", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("busy");
+  const state = f.read();
+  state.slowInspect = true;
+  f.write(state);
+  const marker = path.join(f.dir, "inspect-pids");
+  for (const closed of [false, true]) {
+    fs.rmSync(marker, { force: true });
+    const started = Date.now();
+    f.prompt(
+      folder,
+      "Dev container",
+      `deadline = time.monotonic() + 1
+    while not os.path.exists(${JSON.stringify(marker)}) and time.monotonic() < deadline:
+        time.sleep(0.01)${closed ? "\n    os.kill(child.pid, 15)" : ""}`,
+    );
+    assert.ok(
+      Date.now() - started < 2000,
+      "the first frame waited for synchronous Docker inspection",
+    );
+    const pids = fs.readFileSync(marker, "utf8").trim().split("\n");
+    for (const pid of pids) {
+      const stat = `/proc/${pid}/stat`;
+      if (fs.existsSync(stat))
+        assert.match(
+          fs.readFileSync(stat, "utf8"),
+          /\) Z /,
+          "inspection still running after dialog exit",
+        );
+    }
+  }
+});
+
+test("a disabled UID update and remote dependencies are described without promising an unusable cache", (t) => {
+  const f = fixture(t);
+  const folder = f.checkout("policy");
+  const file = path.join(folder, ".devcontainer/devcontainer.json");
+  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  config.updateRemoteUserUID = false;
+  fs.writeFileSync(file, JSON.stringify(config));
+  assert.equal(f.start(folder).status, 0);
+  const hit = f.prompt(folder, "reuses cached image");
+  assert.doesNotMatch(hit, /uid-matched copy/);
+  const metadata = path.join(folder, ".devcontainer/features/tools/devcontainer-feature.json");
+  fs.writeFileSync(
+    metadata,
+    JSON.stringify({ id: "tools", dependsOn: { "ghcr.io/devcontainers/features/node:1": {} } }),
+  );
+  const output = f.prompt(folder, "shared cache unavailable");
+  assert.match(output, /shared cache unavailable: remote feature dependencies/);
+  assert.match(output, /builds an image/);
+});
 
 test("identical local features share one feature build and one UID-adjusted image across worktrees", (t) => {
   const f = fixture(t);

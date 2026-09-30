@@ -25,6 +25,7 @@ import { configBaseDir, resolveConfigPath, planProvision } from "./../lib/wtdc/d
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, "..");
 const imageInfoBin = path.join(pluginRoot, "lib", "wtdc", "imageInfo.mjs");
+const featureCacheBin = path.join(pluginRoot, "lib", "wtdc", "featureCache.mjs");
 
 const C = {
   reset: "\x1b[0m",
@@ -66,6 +67,30 @@ let found = resolveConfigPath(checkout, config);
 let configRel = describeConfig(found);
 let plan = null;
 let image = null;
+let featureCache = null;
+let imageLookup = null;
+let cacheLookup = null;
+const featureWatched = new Map();
+
+function stopLookup(child) {
+  if (!child) return;
+  try {
+    // The lookup's synchronous Docker children belong to this private process group.
+    // Cancel them too, so closing the question leaves no inspection running behind it.
+    if (process.platform !== "win32") process.kill(-child.pid, "SIGTERM");
+    else child.kill();
+  } catch {
+    /* Already completed. */
+  }
+}
+
+process.once("exit", () => {
+  stopLookup(imageLookup);
+  stopLookup(cacheLookup);
+});
+for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {
+  process.once(signal, () => process.exit(0));
+}
 
 /** One line per fact, indented under its label, and never longer than it needs to be. */
 const rows = [];
@@ -99,10 +124,16 @@ let imageCheckTimer = null;
 function markEdited() {
   imageDirty = imageBuf !== ((plan && plan.image) || "");
   image = null; // the description belonged to the old image
+  featureCache = null;
+  stopLookup(cacheLookup);
+  cacheLookup = null;
+  stopLookup(imageLookup);
+  imageLookup = null;
   if (imageCheckTimer) clearTimeout(imageCheckTimer);
   imageCheckTimer = setTimeout(() => {
     imageCheckTimer = null;
     refreshImageLater();
+    refreshCacheLater();
   }, IMAGE_SETTLE_MS);
   imageCheckTimer.unref?.();
 }
@@ -120,7 +151,7 @@ function replan() {
   plan = null;
   if (found) {
     try {
-      plan = planProvision(found, config, checkout);
+      plan = planProvision(found, config, checkout, { inspectImage: false });
     } catch (err) {
       // A config this cannot be parsed is not a reason to refuse the question; the setup
       // screen will report it properly, with the file and the reason.
@@ -133,6 +164,7 @@ function replan() {
   imageCaret = imageBuf.length;
   imageDirty = imageBuf !== declared;
   image = null;
+  featureCache = null;
   if (imageDirty) markEdited();
   return plan;
 }
@@ -210,6 +242,23 @@ function render(toggle) {
       features.push(`${C.yellow}not applied: ${plan.droppedFeatures.join(", ")}${C.reset}`);
     }
     row("Features", ...features);
+    if (plan.keptFeatures.some((ref) => /^\.\.?\//.test(ref))) {
+      if (!featureCache) row("Cache", `${C.dim}checking local feature cache…${C.reset}`);
+      else if (featureCache.state === "hit") {
+        row(
+          "Cache",
+          `${C.green}local feature image cached${C.reset}`,
+          featureCache.uidCached && `${C.green}UID/GID-adjusted image cached${C.reset}`,
+        );
+      } else if (featureCache.state === "miss") {
+        row("Cache", `${C.dim}no matching local feature image${C.reset}`);
+      } else {
+        row(
+          "Cache",
+          `${C.yellow}${featureCache.state === "error" ? "cache check failed" : "shared cache unavailable"}${featureCache.reason ? `: ${featureCache.reason}` : ""}${C.reset}`,
+        );
+      }
+    }
 
     // What the container will have of the host's. A bind mount is a host path made
     // available inside, which is worth seeing named rather than inferred, and a mount that
@@ -239,14 +288,21 @@ function render(toggle) {
     // that says "a docker run" and then spends half a minute building an image is not a
     // description of anything.
     const bits = [];
-    if (plan.buildsImage)
+    if (featureCache?.state === "hit")
+      bits.push(`${C.green}reuses cached image${C.reset} — creates a container`);
+    else if (plan.buildsImage && (!featureCache || featureCache.state === "error"))
+      bits.push(
+        `${C.dim}${featureCache ? "feature build if no cached image is available" : "checking whether a feature build is needed"}${C.reset}`,
+      );
+    else if (plan.buildsImage)
       bits.push(`${C.yellow}builds an image for this worktree (~25s+)${C.reset}`);
     else bits.push(`${C.green}no image build from features${C.reset} — a docker run`);
-    if (plan.uidRemap === "differs") {
+    const remap = featureCache?.uidRemap || plan.uidRemap;
+    if (remap === "differs") {
       bits.push(
         `${C.yellow}and a uid-matched copy of the image${C.reset} ${C.dim}(~300 MB, tens of seconds)${C.reset}`,
       );
-    } else if (plan.uidRemap === "unknown") {
+    } else if (remap === "unknown") {
       bits.push(`${C.dim}and a uid-matched copy if the image's user is not your uid${C.reset}`);
     }
     if (plan.remoteUser) bits.push(`${C.dim}user ${plan.remoteUser}${C.reset}`);
@@ -321,7 +377,12 @@ function ask() {
         imageCaret = imageBuf.length;
         imageDirty = false;
         image = null;
+        clearTimeout(imageCheckTimer);
+        imageCheckTimer = null;
+        stopLookup(imageLookup);
+        imageLookup = null;
         refreshImageLater();
+        refreshCacheLater();
         render(toggle);
       } else {
         finish(false);
@@ -332,6 +393,8 @@ function ask() {
       answered = true;
       clearTimeout(imageCheckTimer);
       clearTimeout(escapeTimer);
+      stopLookup(imageLookup);
+      stopLookup(cacheLookup);
       process.stdin.setRawMode(false);
       process.stdin.pause();
       process.stdout.write("\x1b[?25h");
@@ -483,6 +546,7 @@ const answer = ask();
  * process, the prompt stays live and the answer arrives whenever it arrives.
  */
 function refreshImageLater() {
+  if (answered || imageLookup) return;
   const ref = effectiveImage();
   if (!ref) {
     image = null;
@@ -490,7 +554,9 @@ function refreshImageLater() {
   }
   const child = spawn(process.execPath, [imageInfoBin, ref], {
     stdio: ["ignore", "pipe", "ignore"],
+    detached: process.platform !== "win32",
   });
+  imageLookup = child;
   let out = "";
   child.stdout.on("data", (chunk) => {
     out += chunk;
@@ -499,6 +565,8 @@ function refreshImageLater() {
     /* "checking…" is a better answer than a wrong one */
   });
   child.on("close", () => {
+    if (imageLookup !== child) return;
+    imageLookup = null;
     if (answered) return;
     let described = null;
     try {
@@ -520,6 +588,40 @@ function refreshImageLater() {
 }
 
 refreshImageLater();
+
+function refreshCacheLater() {
+  stopLookup(cacheLookup);
+  cacheLookup = null;
+  featureCache = null;
+  featureWatched.clear();
+  if (answered || !found || !plan || plan.error) return;
+  const child = spawn(
+    process.execPath,
+    [featureCacheBin, found, checkout, imageDirty ? imageBuf.trim() : ""],
+    {
+      stdio: ["ignore", "pipe", "ignore"],
+      detached: process.platform !== "win32",
+    },
+  );
+  cacheLookup = child;
+  let out = "";
+  child.stdout.on("data", (chunk) => {
+    out += chunk;
+  });
+  child.on("error", () => {});
+  child.on("close", () => {
+    if (answered || cacheLookup !== child) return;
+    cacheLookup = null;
+    try {
+      featureCache = JSON.parse(out);
+    } catch {
+      featureCache = { state: "error", reason: "inspection did not complete" };
+    }
+    for (const file of featureCache.watched || []) featureWatched.set(file, stampOf(file));
+    render(toggle);
+  });
+  child.unref();
+}
 
 /**
  * Watch the config and re-plan when it changes.
@@ -560,6 +662,7 @@ const remember = () => {
   }
 };
 remember();
+refreshCacheLater();
 
 const watcher = setInterval(() => {
   if (answered) return;
@@ -578,14 +681,24 @@ const watcher = setInterval(() => {
       if (stampOf(file)) changed = true;
     }
   }
-  if (!changed) return;
-
-  const before = plan && plan.image;
-  replan();
-  if (plan && plan.image !== before) {
-    image = null; // the description now belongs to a different image
-    refreshImageLater();
+  if (!changed) {
+    if ([...featureWatched].some(([file, was]) => stampOf(file) !== was)) {
+      refreshCacheLater();
+      render(toggle);
+    }
+    return;
   }
+
+  const before = effectiveImage();
+  const previousImage = image;
+  replan();
+  refreshCacheLater();
+  if (effectiveImage() !== before) {
+    image = null; // the description now belongs to a different image
+    stopLookup(imageLookup);
+    imageLookup = null;
+    refreshImageLater();
+  } else image = previousImage;
   render(toggle);
 }, 750);
 watcher.unref();
