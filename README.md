@@ -262,6 +262,15 @@ there, then starts it against the actual worktree. Initialization commands, work
 mounts, and lifecycle commands still use the actual checkout. This also supports
 main-checkout features that are absent from an older worktree.
 
+For an image base with only local features, identical build inputs share one
+feature image across worktrees. The key includes the base image ID, feature files
+and options, user settings, and CLI version. After the first successful startup,
+the CLI's UID/GID-adjusted image is also reused for the same host IDs and user.
+Container creation and lifecycle commands still run for each worktree. Changed
+inputs or removed cached images trigger a build. Dockerfile builds, remote feature
+dependencies, and configurations with variable substitutions continue to use the
+CLI's normal build cache.
+
 If setup fails, the screen shows the error before the stack trace and the path to
 a complete private log under the plugin state directory's `logs` folder. The log
 remains available after the setup pane closes.
