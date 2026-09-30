@@ -108,6 +108,7 @@ fi
 if [ "$a1 $a2" = "ps -q" ]; then echo "deadbeefcafe"; exit 0; fi
 if [ "$a1 $a2" = "ps -aq" ]; then echo "deadbeefcafe"; exit 0; fi
 if [ "$a1" = "rename" ]; then exit 0; fi
+if [ "$a1" = "inspect" ] && [ "$3" = "{{json .Mounts}}" ]; then echo '[]'; exit 0; fi
 if [ "$a1" = "inspect" ]; then echo "/workspaces/demo"; exit 0; fi
 if [ "$a1 $a2" = "exec getent" ] || [ "$a1" = "exec" ] && [ "$3" = "getent" ]; then
   echo "devuser:x:1000:1000::/home/devuser:/bin/bash"; exit 0

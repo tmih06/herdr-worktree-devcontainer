@@ -8,6 +8,8 @@
 //   startup                startup hook: retry cleanup and report tracked containers
 //   provision <path> [ws] [label]
 //   teardown  <path> [--force]
+//   remove-worktree <workspace-id> [--force]
+//   cleanup                retry pending or deleted-worktree cleanup
 //   status
 //   install-shell          configure Herdr to use the shell dispatcher
 //   action <id>            plugin action entry point
@@ -246,6 +248,7 @@ function provision(checkout, workspaceId = "", labelArg = "") {
     slug,
     project,
     checkout_path: checkout,
+    workspace_id: workspaceId,
     container_id: "",
     container_name: "",
     container_workspace: "",
@@ -265,6 +268,13 @@ function provision(checkout, workspaceId = "", labelArg = "") {
     dieCommand(err);
   }
   if (!up.containerId) die("devcontainer up did not report a container id");
+
+  state.patch(checkout, { container_id: up.containerId });
+  try {
+    state.patch(checkout, { cleanup_volumes: dc.containerVolumes(up.containerId) });
+  } catch (err) {
+    warn(`could not record DinD volumes; teardown will inspect them again: ${err.message}`);
+  }
 
   const cname = containerNameFor(slug, project);
   if (tryRun("docker", ["rename", up.containerId, cname]).status === 0) {
@@ -334,7 +344,7 @@ function teardown(checkout, force = false) {
   const keep = config.WTDC_KEEP_CONTAINER === "1" && !force;
   if (!entry && keep) {
     info(`no dev container tracked for ${checkout}`);
-    return;
+    return true;
   }
 
   if (keep) {
@@ -345,10 +355,13 @@ function teardown(checkout, force = false) {
     // Journal the intent before touching Docker, including an orphan sweep.
     // A killed hook or daemon outage must leave enough information to retry.
     entry ||= { checkout_path: checkout, merged_config: dc.mergedPathFor(checkout) };
-    state.set(checkout, { ...entry, cleanup_pending: true });
-    step("Destroying the container");
+    state.set(checkout, { ...entry, cleanup_pending: true, cleanup_force: force });
+    step("Destroying the container and DinD volumes");
     try {
-      dc.down(checkout, entry.merged_config, entry.container_id);
+      dc.down(checkout, entry.merged_config, entry.container_id, {
+        volumes: entry.cleanup_volumes,
+        saveVolumes: (cleanup_volumes) => state.patch(checkout, { cleanup_volumes }),
+      });
     } catch (err) {
       warn(`cleanup failed for ${checkout}: ${err.message}`);
       warn(
@@ -359,7 +372,7 @@ function teardown(checkout, force = false) {
         `state retained for ${checkout}; cleanup will retry on startup`,
       );
       process.exitCode = 1;
-      return;
+      return false;
     }
   }
 
@@ -371,7 +384,7 @@ function teardown(checkout, force = false) {
     } catch (err) {
       warn(`could not remove merged config: ${err.message}; state retained for retry`);
       process.exitCode = 1;
-      return;
+      return false;
     }
   }
 
@@ -383,6 +396,7 @@ function teardown(checkout, force = false) {
 
   state.del(checkout);
   ok("torn down");
+  return true;
 }
 
 // --------------------------------------------------------------------- status
@@ -468,7 +482,7 @@ function hookRemoved() {
 
 function checkoutMissing(checkout) {
   try {
-    fs.statSync(checkout);
+    fs.statSync(path.join(checkout, ".git"));
     return false;
   } catch (err) {
     // Permission errors and other filesystem failures do not prove removal.
@@ -481,16 +495,11 @@ function startup() {
   if (config.WTDC_ENABLED !== "1") return;
   if (!have("docker", ["--version"])) return;
 
+  cleanup(config);
   const entries = state.list();
   let running = 0;
   for (const entry of entries) {
-    if (
-      config.WTDC_KEEP_CONTAINER !== "1" &&
-      (entry.cleanup_pending || checkoutMissing(entry.checkout_path))
-    ) {
-      teardown(entry.checkout_path);
-      continue;
-    }
+    if (entry.cleanup_pending) continue;
     if (!dc.containerIsRunning(entry.container_id)) continue;
     running += 1;
     const workspaceId = herdr.workspaceIdFor(entry.checkout_path);
@@ -503,6 +512,15 @@ function startup() {
     if (marker) state.patch(entry.checkout_path, marker);
   }
   info(`dev containers tracked: ${state.list().length}, running: ${running}`);
+}
+
+function cleanup(config = loadConfig()) {
+  for (const entry of state.list()) {
+    if (config.WTDC_KEEP_CONTAINER === "1" && !entry.cleanup_force) continue;
+    if (entry.cleanup_pending || checkoutMissing(entry.checkout_path)) {
+      teardown(entry.checkout_path, Boolean(entry.cleanup_force));
+    }
+  }
 }
 
 // ------------------------------------------------------------------- actions
@@ -617,9 +635,46 @@ function actionProvision() {
 }
 
 function actionTeardown() {
-  const checkout = herdr.contextWorktree();
+  const workspaceId = process.env.HERDR_WORKSPACE_ID;
+  const saved = state
+    .list()
+    .find(
+      (entry) =>
+        workspaceId &&
+        (entry.workspace_id === workspaceId || entry.marked_workspace_id === workspaceId),
+    );
+  const checkout = herdr.contextWorktree() || saved?.checkout_path;
   if (!checkout) die("this action must be invoked from a worktree workspace");
   teardown(checkout);
+}
+
+/** Only this explicit action can put Docker cleanup before Herdr's Git removal. */
+function removeWorktree(workspaceId, force = false) {
+  if (!workspaceId) die("workspace id required");
+  const doc = herdr.herdrJson(["workspace", "get", workspaceId]);
+  const worktree = doc?.result?.workspace?.worktree;
+  if (!worktree?.is_linked_worktree || !worktree.checkout_path) {
+    die("workspace is not a linked worktree; use the cleanup action for leftover Docker resources");
+  }
+  const checkout = worktree.checkout_path;
+  if (!force) {
+    const status = tryRun("git", ["-C", checkout, "status", "--porcelain"]);
+    if (status.status !== 0) dieCommand(status);
+    if (status.stdout.trim())
+      die("worktree has uncommitted changes; commit or stash before removal");
+  }
+  if (!teardown(checkout, true)) return;
+  const args = ["worktree", "remove", "--workspace", workspaceId];
+  if (force) args.push("--force");
+  const removed = tryRun(process.env.HERDR_BIN_PATH || "herdr", args);
+  if (removed.status !== 0) {
+    warn(
+      `Docker cleanup finished, but Git removal failed: ${(removed.stderr || removed.stdout).trim()}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  ok("removed worktree after container and volume cleanup");
 }
 
 // ------------------------------------------------------------------ boot hand-off
@@ -718,6 +773,10 @@ function main() {
       if (!rest[0]) die("worktree path required");
       return teardown(rest[0], rest[1] === "--force" || rest[1] === "1");
     }
+    case "remove-worktree":
+      return removeWorktree(rest[0], rest[1] === "--force");
+    case "cleanup":
+      return cleanup();
     case "status":
       return status();
     case "boot-launch": {
@@ -738,6 +797,8 @@ terminals inside it, keeping the worktree grouped under its repo.
   startup                 startup hook: retry cleanup and report tracked containers
   provision <path> [ws] [label]
   teardown  <path> [--force]
+  remove-worktree <workspace-id> [--force]  clean Docker before Git removal
+  cleanup                 retry pending or deleted-worktree cleanup
   status
   install-shell           configure Herdr to use the shell dispatcher
   action <id>             plugin action entry point
@@ -747,6 +808,8 @@ terminals inside it, keeping the worktree grouped under its repo.
       const id = rest[0];
       if (id === "provision") return actionProvision();
       if (id === "teardown") return actionTeardown();
+      if (id === "remove-worktree") return removeWorktree(process.env.HERDR_WORKSPACE_ID);
+      if (id === "cleanup") return cleanup();
       if (id === "status") return status();
       if (id === "install-shell") return actionInstallShell();
       return die(`unknown action: ${id || ""}`);

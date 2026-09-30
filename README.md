@@ -170,12 +170,14 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
 ### Actions
 
-| Action          | What it does                                                                 |
-| --------------- | ---------------------------------------------------------------------------- |
-| `provision`     | build a container for the current worktree                                   |
-| `status`        | list tracked worktrees and whether their containers run                      |
-| `teardown`      | destroy the current worktree's container                                     |
-| `install-shell` | point `terminal.default_shell` at the dispatcher, back up the config, reload |
+| Action            | What it does                                                                   |
+| ----------------- | ------------------------------------------------------------------------------ |
+| `provision`       | build a container for the current worktree                                     |
+| `status`          | list tracked worktrees and whether their containers run                        |
+| `teardown`        | destroy the current worktree's container                                       |
+| `remove-worktree` | remove the containers and DinD volumes before deleting the Git worktree        |
+| `cleanup`         | retry pending cleanup and reclaim tracked resources whose Git metadata is gone |
+| `install-shell`   | point `terminal.default_shell` at the dispatcher, back up the config, reload   |
 
 ## How it works
 
@@ -393,13 +395,31 @@ so the worktree stays retryable, and cleanup also sweeps containers by Docker's
 `devcontainer.local_folder` label, so a build that died before state was written
 can still be cleaned up.
 
-Herdr's `worktree.removed` event runs **after the checkout has been deleted**.
-Cleanup records a pending entry before touching Docker, then removes the saved
-container and all containers labelled for the checkout. A Docker query or removal
+Use the **Dev container: remove worktree, container and volumes** action to remove
+a containerised worktree. It checks for uncommitted changes, removes the containers
+and their two plugin-owned DinD volumes, then calls Herdr to remove the Git worktree.
+If Docker cleanup fails, the checkout stays intact. From the host CLI:
+
+```sh
+node bin/wtdc.mjs remove-worktree <workspace-id>
+```
+
+Herdr's built-in removal still deletes Git first: its `worktree.removed` event runs
+**after the checkout has been deleted**, and Herdr 0.9.1 provides no cancellable
+pre-removal hook. The plugin action is required to guarantee Docker-first ordering.
+
+Cleanup records a pending entry and inspects the owned volume mounts before deleting
+any container. Volume names stay in state until cleanup finishes, including after
+the container has disappeared. User-defined volumes are preserved. Cleanup removes
+the saved container and all containers labelled for the checkout. A Docker query or removal
 failure reports an error and retains state and the merged config for retry; one
 failed removal does not prevent attempts to remove the other containers.
 On startup, the plugin retries pending cleanup and cleans tracked containers whose
-checkout paths no longer exist. `WTDC_KEEP_CONTAINER=1` skips automatic removal.
+checkout or `.git` metadata no longer exists. The **Dev container: retry interrupted
+cleanup** action runs the same recovery immediately, without needing a Git workspace.
+The destroy action also resolves saved workspace IDs when Herdr has lost Git membership.
+`WTDC_KEEP_CONTAINER=1` skips automatic removal, except an explicitly forced cleanup
+already in progress.
 It also keeps staged config assets that the container may need as bind sources
 on restart; a later forced teardown removes them.
 To retry manually, including for an untracked container at a deleted path:
@@ -408,9 +428,10 @@ To retry manually, including for an untracked container at a deleted path:
 node bin/wtdc.mjs teardown /absolute/path/to/worktree --force
 ```
 
-This provides recovery after an interrupted hook; the post-removal event cannot
-guarantee that containers stop before checkout deletion. An untracked container
-whose removal hook never started still needs cleanup by its checkout path.
+Named DinD volumes leaked by older versions after their containers were deleted
+cannot be associated with a checkout anymore; they need a one-time removal after
+checking that no container uses them. An untracked container whose removal hook
+never started still needs cleanup by its checkout path.
 
 ## Layout
 

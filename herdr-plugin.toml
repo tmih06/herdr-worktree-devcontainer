@@ -37,6 +37,18 @@ title = "Dev container: destroy for this worktree"
 contexts = ["workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "teardown"]
 
+[[actions]]
+id = "remove-worktree"
+title = "Dev container: remove worktree, container and volumes"
+contexts = ["workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "remove-worktree"]
+
+[[actions]]
+id = "cleanup"
+title = "Dev container: retry interrupted cleanup"
+contexts = ["global", "workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "cleanup"]
+
 # Points terminal.default_shell at the dispatcher, keeping a .bak-before-wtdc copy of
 # the config as it was, and reloads the server. Without this key every new pane runs the
 # user's own shell, so a worktree with a running container still gives host terminals —
