@@ -164,7 +164,16 @@ function imageLines() {
         `${C.yellow}not on this machine — will be pulled${C.reset}${size ? `  ${size}` : ""}`,
       ];
     default:
-      return [`${C.dim}local state unknown${C.reset}`];
+      if (image.localState === "present") {
+        const why =
+          image.reason === "no registry digest"
+            ? "no registry digest to compare"
+            : `published version unavailable${image.reason ? `: ${image.reason}` : ""}`;
+        return [`${C.dim}already pulled — ${why}${C.reset}${size ? `  ${size}` : ""}`];
+      }
+      return [
+        `${C.yellow}local image check failed${image.reason ? `: ${image.reason}` : ""}${C.reset}`,
+      ];
   }
 }
 
@@ -502,7 +511,7 @@ function refreshImageLater() {
     // A slow answer for the previous image lands after the user has typed a new one, and
     // honouring it would describe an image that is no longer on screen.
     if (described.ref !== effectiveImage()) return;
-    if (described.state === image?.state && described.size === image?.size) return;
+    if (JSON.stringify(described) === JSON.stringify(image)) return;
     image = described;
     render(toggle);
   });

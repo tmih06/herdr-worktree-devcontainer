@@ -83,6 +83,12 @@ is resolved _after_ the first frame and fills in when it arrives, so a slow
 registry never holds the question hostage — and when it cannot be answered the
 line says so rather than implying the image is current.
 
+Registry comparison uses Docker Buildx. If Buildx is missing, the registry is
+unreachable, or a local image has no registry digest, the line still says
+`already pulled` and explains why comparison is unavailable. A failed local Docker
+inspection reports `local image check failed` with the error; only Docker's
+`No such image` response means the image needs pulling.
+
 That description comes from the same function provisioning uses, so it cannot
 drift from what actually runs. `Features` names what a template would drop, and
 `Setup` says what the build will actually cost — including the part that is easy
@@ -369,10 +375,27 @@ permission to skip the check.
 State lives at `$HERDR_PLUGIN_STATE_DIR/state.json`, keyed by absolute checkout
 path, and holds the container id, name, user, and container-side workspace path
 the dispatcher needs on every new pane. The merged config is removed with the
-entry. A failed build drops its partial entry so the worktree stays retryable,
-and the `worktree.removed` hook also sweeps containers by Docker's
+entry, after container removal succeeds. A failed build drops its partial entry
+so the worktree stays retryable, and cleanup also sweeps containers by Docker's
 `devcontainer.local_folder` label, so a build that died before state was written
-is still cleaned up.
+can still be cleaned up.
+
+Herdr's `worktree.removed` event runs **after the checkout has been deleted**.
+Cleanup records a pending entry before touching Docker, then removes the saved
+container and all containers labelled for the checkout. A Docker query or removal
+failure reports an error and retains state and the merged config for retry; one
+failed removal does not prevent attempts to remove the other containers.
+On startup, the plugin retries pending cleanup and cleans tracked containers whose
+checkout paths no longer exist. `WTDC_KEEP_CONTAINER=1` skips automatic removal.
+To retry manually, including for an untracked container at a deleted path:
+
+```sh
+node bin/wtdc.mjs teardown /absolute/path/to/worktree --force
+```
+
+This provides recovery after an interrupted hook; the post-removal event cannot
+guarantee that containers stop before checkout deletion. An untracked container
+whose removal hook never started still needs cleanup by its checkout path.
 
 ## Layout
 

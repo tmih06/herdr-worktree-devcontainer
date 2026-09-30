@@ -5,7 +5,7 @@
 // Commands:
 //   hook-created            event hook: offer to provision a new worktree
 //   hook-removed           event hook: tear down a removed worktree
-//   startup                startup hook: report tracked containers
+//   startup                startup hook: retry cleanup and report tracked containers
 //   provision <path> [ws] [label]
 //   teardown  <path> [--force]
 //   status
@@ -325,32 +325,52 @@ function provision(checkout, workspaceId = "", labelArg = "") {
 
 function teardown(checkout, force = false) {
   const config = loadConfig();
-  const entry = state.get(checkout);
-  if (!entry) {
+  let entry = state.get(checkout);
+  const keep = config.WTDC_KEEP_CONTAINER === "1" && !force;
+  if (!entry && keep) {
     info(`no dev container tracked for ${checkout}`);
     return;
   }
 
-  if (config.WTDC_KEEP_CONTAINER === "1" && !force) {
+  if (keep) {
     warn(
       `WTDC_KEEP_CONTAINER=1: leaving container ${(entry.container_id || "").slice(0, 12)} running`,
     );
   } else {
+    // Journal the intent before touching Docker, including an orphan sweep.
+    // A killed hook or daemon outage must leave enough information to retry.
+    entry ||= { checkout_path: checkout };
+    state.set(checkout, { ...entry, cleanup_pending: true });
     step("Destroying the container");
-    dc.down(checkout, entry.merged_config, entry.container_id);
+    try {
+      dc.down(checkout, entry.merged_config, entry.container_id);
+    } catch (err) {
+      warn(`cleanup failed for ${checkout}: ${err.message}`);
+      warn(
+        `state retained; retry with: node ${path.join(ROOT, "bin/wtdc.mjs")} teardown "${checkout}" --force`,
+      );
+      notify(
+        "Dev container cleanup failed",
+        `state retained for ${checkout}; cleanup will retry on startup`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
 
   if (entry.merged_config) {
     try {
       fs.rmSync(path.dirname(entry.merged_config), { recursive: true, force: true });
-    } catch {
-      /* already gone */
+    } catch (err) {
+      warn(`could not remove merged config: ${err.message}; state retained for retry`);
+      process.exitCode = 1;
+      return;
     }
   }
 
   // Take the marker off, unless the container was deliberately kept — in which case it is
   // still there, and the row should still say so.
-  if (config.WTDC_KEEP_CONTAINER !== "1" || force) {
+  if (!keep) {
     unmarkContainerised(entry);
   }
 
@@ -436,12 +456,17 @@ function hookRemoved() {
   const checkout = herdr.eventWorktreePath();
   if (!checkout) return;
 
-  if (state.has(checkout)) teardown(checkout);
-  if (config.WTDC_KEEP_CONTAINER === "1") return;
-  // Sweep by Docker label, so a build that failed before state was written is
-  // still cleaned up.
-  const removed = dc.removeOrphans(checkout);
-  if (removed > 0) ok(`removed ${removed} orphaned container(s) for ${checkout}`);
+  teardown(checkout);
+}
+
+function checkoutMissing(checkout) {
+  try {
+    fs.statSync(checkout);
+    return false;
+  } catch (err) {
+    // Permission errors and other filesystem failures do not prove removal.
+    return err.code === "ENOENT" || err.code === "ENOTDIR";
+  }
 }
 
 function startup() {
@@ -452,6 +477,13 @@ function startup() {
   const entries = state.list();
   let running = 0;
   for (const entry of entries) {
+    if (
+      config.WTDC_KEEP_CONTAINER !== "1" &&
+      (entry.cleanup_pending || checkoutMissing(entry.checkout_path))
+    ) {
+      teardown(entry.checkout_path);
+      continue;
+    }
     if (!dc.containerIsRunning(entry.container_id)) continue;
     running += 1;
     const workspaceId = herdr.workspaceIdFor(entry.checkout_path);
@@ -463,7 +495,7 @@ function startup() {
     const marker = markContainerised(workspaceId, config);
     if (marker) state.patch(entry.checkout_path, marker);
   }
-  info(`dev containers tracked: ${entries.length}, running: ${running}`);
+  info(`dev containers tracked: ${state.list().length}, running: ${running}`);
 }
 
 // ------------------------------------------------------------------- actions
@@ -696,7 +728,7 @@ terminals inside it, keeping the worktree grouped under its repo.
 
   hook-created            event hook: offer to provision a new worktree
   hook-removed            event hook: tear down a removed worktree
-  startup                 startup hook: report tracked containers
+  startup                 startup hook: retry cleanup and report tracked containers
   provision <path> [ws] [label]
   teardown  <path> [--force]
   status
