@@ -229,6 +229,8 @@ Press **r** to choose a rebuild, or use **Dev container: rebuild and reopen…**
 after editing the config. Switching config source also requires a rebuild.
 Reopening with the same source starts the saved container without an image build;
 if it was removed, the plugin creates another. Existing project panes are kept.
+Reopening uses a new tab, preserving their layout. When setup finishes, its label
+and zoom are cleared before the terminal enters the container.
 
 **Dev container: reopen on host (keep data)** remembers host mode, opens a host
 terminal, and stops that checkout's container. New panes use the host even after
@@ -376,6 +378,38 @@ returns. Your `postCreateCommand` keeps its original string, array, or object sh
 The build timeout applies to this wait as well as the CLI work. The plugin also adds
 `--hostname <branch>` in `runArgs`, so the prompt says which worktree you are in. A
 `--hostname` you set yourself always wins. See `WTDC_HOSTNAME`.
+
+### Mount host tools and authentication files
+
+This example follows this repo's [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json).
+It mounts LazyGit, the complete Codex installation, and the host's Codex login
+into the container as read-only bind mounts:
+
+```jsonc
+{
+  "name": "my-project",
+  "image": "ghcr.io/tmih06/herdr-devcontainer-node:latest",
+  "remoteUser": "dev",
+  "mounts": [
+    "type=bind,source=${localEnv:HOME}/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly",
+    "type=bind,source=${localEnv:HOME}/.codex/packages/standalone/current,target=/opt/codex,readonly",
+    "type=bind,source=${localEnv:HOME}/.codex/auth.json,target=/home/dev/.codex/auth.json,readonly",
+  ],
+  "postCreateCommand": "sudo chown dev:dev /home/dev/.codex && sudo chmod 700 /home/dev/.codex && sudo ln -sf /opt/codex/bin/codex /usr/local/bin/codex",
+}
+```
+
+`${localEnv:HOME}` resolves to the host's home directory. Use it instead of a
+literal `~`, which Docker does not expand. Adjust the source paths to your host's
+installation and remove mounts for tools you do not use; each source must exist
+before starting the container.
+
+Codex needs its companion binaries and resources, so the example mounts the
+whole installation directory. The setup command links its executable into
+`PATH` and makes `/home/dev/.codex` writable for local state while the mounted
+authentication file stays read-only. If your image uses another `remoteUser`,
+adjust the home path and ownership command. After changing mounts, rebuild with
+**Ctrl+B**, then **f**, if you installed the shortcuts above.
 
 ## Configuration
 
