@@ -1227,6 +1227,9 @@ test("reopen handoff preserves existing panes and carries the chosen config sour
     WTDC_CONFIG_SOURCE_OVERRIDE: "worktree",
   });
   assert.equal(result.status, 0, result.stderr);
+  assert.match(calls("herdr"), /--entrypoint boot --placement tab --workspace w9/);
+  assert.doesNotMatch(calls("herdr"), /--target-pane /);
+  assert.match(calls("herdr"), /--focus/);
   assert.match(calls("herdr"), /WTDC_PRESERVE_PANES=1/);
   assert.match(calls("herdr"), /WTDC_REBUILD=1/);
   assert.match(calls("herdr"), /WTDC_CONFIG_SOURCE_OVERRIDE=worktree/);

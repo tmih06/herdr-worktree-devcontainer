@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Blocking setup screen shown while a dev container is being provisioned.
 //
-// Opened zoomed over the new worktree's own pane, so it holds that screen and the
-// keyboard until the container is ready. The previous behaviour streamed
+// Opened zoomed over a new worktree's own pane, or in a new tab when reopening an
+// existing workspace so its panes and layout are preserved. It holds that screen
+// and the keyboard until the container is ready. The previous behaviour streamed
 // `devcontainer up` into an ordinary tab, which meant the pane was easy to lose
 // behind other tabs and the user had no way to tell a slow build from a hung
 // one.
@@ -34,7 +35,7 @@ import {
 import { loadConfig } from "../lib/wtdc/config.mjs";
 import { get as stateFor } from "../lib/wtdc/state.mjs";
 import { enterContainerShell } from "../lib/wtdc/containerShell.mjs";
-import { closePane, isLastPane, openHostTab } from "../lib/wtdc/herdr.mjs";
+import { clearSetupPane, closePane, isLastPane, openHostTab } from "../lib/wtdc/herdr.mjs";
 import { failureRows, setupLog } from "../lib/wtdc/setupLog.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -260,7 +261,7 @@ function takesOverTerminal() {
 /**
  * Become the container terminal.
  *
- * Two things happen, in this order and both deliberately:
+ * Three things happen, in this order and deliberately:
  *
  *  1. The worktree's original shell pane is closed. It was spawned before the container
  *     existed, so it is a host shell, and the plugin's whole promise is that terminals in
@@ -268,7 +269,10 @@ function takesOverTerminal() {
  *     still not in dc". It is closed *after* this pane has something to replace it with,
  *     never before, so the workspace is never briefly empty.
  *
- *  2. This pane execs into the container, through the same planExec the dispatcher uses
+ *  2. Its setup title, zoom and keyboard handler are cleared. The process stays alive,
+ *     so Herdr cannot retire those settings by observing a pane exit.
+ *
+ *  3. This pane enters the container, through the same planExec the dispatcher uses
  *     for every other pane. Handing the pane over rather than opening a second one and
  *     exiting is what makes the ordering above impossible to get wrong: there is no gap
  *     between "the setup screen goes" and "the container terminal exists", which is the
@@ -290,6 +294,10 @@ function handOver() {
   if (hostPane && hostPane !== selfPane && process.env.WTDC_PRESERVE_PANES !== "1")
     closePane(hostPane);
 
+  // The process continues in this pane, so Herdr will not clear its setup title or
+  // zoom on exit. Retire that UI explicitly and release setup's keyboard handler.
+  clearSetupPane(selfPane);
+  cleanup();
   process.stdout.write("\x1b[?25h");
   const status = enterContainerShell(entry, checkout, {
     label,
@@ -369,7 +377,7 @@ const onKey = (chunk) => {
 };
 
 function cleanup() {
-  process.stdin.setRawMode(false);
+  if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
   process.stdin.off("data", onKey);
 }

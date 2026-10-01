@@ -828,9 +828,13 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
   // told. Environment only and only when one was given, so the config's own image is used
   // whenever the field was left as a placeholder.
   const override = (process.env.WTDC_OVERRIDE_IMAGE || "").trim();
+  const reopening = process.env.WTDC_REOPEN === "1";
 
   herdr.openPluginPane("boot", {
-    placement: "zoomed",
+    // Reopening keeps existing panes and their layout. A tab also prevents a
+    // hidden setup split from keeping a blue pane border around the new shell.
+    placement: reopening ? "tab" : "zoomed",
+    focus: reopening,
     workspace: workspaceId || undefined,
     cwd: checkout,
     // The worktree's own pane, captured by the hook before this plugin opened
@@ -841,7 +845,7 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
       WTDC_CHECKOUT: checkout,
       WTDC_LABEL: label,
       WTDC_WORKSPACE: workspaceId,
-      WTDC_TARGET_PANE: pane,
+      WTDC_TARGET_PANE: reopening ? "" : pane,
       ...(override ? { WTDC_OVERRIDE_IMAGE: override } : {}),
       ...(process.env.WTDC_CONFIG_SOURCE_OVERRIDE
         ? { WTDC_CONFIG_SOURCE_OVERRIDE: process.env.WTDC_CONFIG_SOURCE_OVERRIDE }
