@@ -145,12 +145,15 @@ function unmarkContainerised(entry) {
 function provisionFailed() {
   const checkout = process.env.WTDC_PROVISION_CHECKOUT;
   const label = process.env.WTDC_PROVISION_LABEL || "worktree";
-  if (checkout && state.has(checkout)) {
+  const entry = checkout && state.get(checkout);
+  if (entry && !entry.container_id && !entry.cleanup_volumes?.length) {
     // Drop the entry so the worktree stays retryable: hook_created skips
     // worktrees that already have state, so a half-written entry would stop the
     // prompt from ever appearing again.
     state.del(checkout);
   }
+  if (!entry || (!entry.container_id && !entry.cleanup_volumes?.length))
+    state.setPreference(checkout, { mode: process.env.WTDC_PROVISION_PREVIOUS_MODE || undefined });
   notify(
     `Dev container failed: ${label}`,
     "the build tab has the error; provision it again",
@@ -159,7 +162,7 @@ function provisionFailed() {
 }
 
 function provision(checkout, workspaceId = "", labelArg = "") {
-  const config = loadConfig();
+  const config = dc.configForCheckout(checkout, loadConfig());
   const label = labelArg || path.basename(checkout);
   // Set by panes/boot.mjs, which is showing the progress and will hand its own pane to
   // the container shell when this returns.
@@ -167,9 +170,34 @@ function provision(checkout, workspaceId = "", labelArg = "") {
 
   process.env.WTDC_PROVISION_LABEL = label;
   process.env.WTDC_PROVISION_CHECKOUT = checkout;
+  process.env.WTDC_PROVISION_PREVIOUS_MODE = state.preference(checkout).mode || "";
   process.on("exit", provisionFailed);
 
   const src = requireConfig(checkout, config);
+  const previous = state.get(checkout);
+  if (previous?.cleanup_pending) die("cleanup is pending; retry cleanup before reopening");
+
+  if (
+    process.env.WTDC_REOPEN === "1" &&
+    process.env.WTDC_REBUILD !== "1" &&
+    previous?.container_id &&
+    !previous.provision_pending &&
+    previous.source_config === src &&
+    !process.env.WTDC_OVERRIDE_IMAGE &&
+    dc.containerExists(previous.container_id)
+  ) {
+    if (!dc.containerIsRunning(previous.container_id)) dc.startContainer(previous.container_id);
+    if (!dc.containerIsRunning(previous.container_id)) die("the existing container did not start");
+    state.setPreference(checkout, { mode: "container", config_source: config.WTDC_CONFIG_SOURCE });
+    const marker = markContainerised(workspaceId || herdr.workspaceIdFor(checkout), config);
+    if (marker) state.patch(checkout, marker);
+    if (workspaceId) state.patch(checkout, { workspace_id: workspaceId });
+    openContainerTerminal(previous, workspaceId, label, handedOver, config);
+    ok(`reopened ${label} in its existing dev container`);
+    emit("done", 100, previous.container_name || previous.container_id);
+    process.removeListener("exit", provisionFailed);
+    return;
+  }
   const slug = uniqueSlug(slugify(label), checkout);
   const project = projectFor(checkout);
   const merged = dc.mergedPathFor(checkout);
@@ -245,18 +273,24 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   // Persist before the slow work, so a crash during the build still leaves
   // teardown able to find and clean up the merged config.
   state.set(checkout, {
+    ...previous,
     label,
     slug,
     project,
     checkout_path: checkout,
     workspace_id: workspaceId,
-    container_id: "",
-    container_name: "",
-    container_workspace: "",
-    remote_user: "",
+    container_id: previous?.container_id || "",
+    container_name: previous?.container_name || "",
+    container_workspace: previous?.container_workspace || "",
+    remote_user: previous?.remote_user || "",
     merged_config: merged,
-    source_config: src,
+    source_config: previous?.source_config || src,
+    provision_pending: true,
+    checkout_kind: fs.existsSync(path.join(checkout, ".git")) ? "git" : "folder",
   });
+  // New panes stay on the host until the replacement is ready. Never discard old
+  // volume names: a failed rebuild must remain recoverable without losing DinD data.
+  state.setPreference(checkout, { mode: "host", config_source: config.WTDC_CONFIG_SOURCE });
 
   step("Building and starting the container (this can take a while)");
   emit("up", phaseStart("up") * 100);
@@ -272,7 +306,11 @@ function provision(checkout, workspaceId = "", labelArg = "") {
 
   state.patch(checkout, { container_id: up.containerId });
   try {
-    state.patch(checkout, { cleanup_volumes: dc.containerVolumes(up.containerId) });
+    state.patch(checkout, {
+      cleanup_volumes: [
+        ...new Set([...(previous?.cleanup_volumes || []), ...dc.containerVolumes(up.containerId)]),
+      ],
+    });
   } catch (err) {
     warn(`could not record DinD volumes; teardown will inspect them again: ${err.message}`);
   }
@@ -295,7 +333,10 @@ function provision(checkout, workspaceId = "", labelArg = "") {
     container_id: up.containerId,
     container_workspace: up.containerWorkspace,
     remote_user: remoteUser,
+    source_config: src,
+    provision_pending: false,
   });
+  state.setPreference(checkout, { mode: "container" });
 
   // The worktree stays a local Herdr worktree; the container is reached through
   // the shell dispatcher. Mark the row so the sidebar shows which worktrees are
@@ -308,17 +349,25 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   detail(`container: ${cname} (${up.containerId.slice(0, 12)})`);
   detail(`container cwd: ${up.containerWorkspace || "<default>"}`);
 
+  openContainerTerminal(state.get(checkout), workspaceId, label, handedOver, config);
+
+  notify(`Dev container ready: ${label}`, "the container terminal is attached", "done");
+  emit("done", 100, cname);
+  process.removeListener("exit", provisionFailed);
+}
+
+function openContainerTerminal(entry, workspaceId, label, handedOver, config) {
   if (config.WTDC_OPEN_CONTAINER_PANE === "1" && !handedOver) {
     herdr.openPluginPane("container", {
       placement: "tab",
       workspace: workspaceId || undefined,
-      cwd: checkout,
+      cwd: entry.checkout_path,
       env: {
-        WTDC_CONTAINER_ID: up.containerId,
-        WTDC_CONTAINER_WORKSPACE: up.containerWorkspace,
-        WTDC_CONTAINER_USER: remoteUser,
+        WTDC_CONTAINER_ID: entry.container_id,
+        WTDC_CONTAINER_WORKSPACE: entry.container_workspace,
+        WTDC_CONTAINER_USER: entry.remote_user,
         WTDC_LABEL: label,
-        WTDC_CHECKOUT: checkout,
+        WTDC_CHECKOUT: entry.checkout_path,
       },
       focus: true,
     });
@@ -331,10 +380,6 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   } else {
     detail("container tab opening is disabled by WTDC_OPEN_CONTAINER_PANE=0");
   }
-
-  notify(`Dev container ready: ${label}`, "the container terminal is attached", "done");
-  emit("done", 100, cname);
-  process.removeListener("exit", provisionFailed);
 }
 
 // ------------------------------------------------------------------- teardown
@@ -410,7 +455,12 @@ function status() {
     return;
   }
   for (const e of entries) {
-    const alive = dc.containerIsRunning(e.container_id) ? "running" : "not running";
+    const alive =
+      state.preference(e.checkout_path).mode === "host"
+        ? "host"
+        : dc.containerIsRunning(e.container_id)
+          ? "running"
+          : "not running";
     const label = e.label || path.basename(e.checkout_path);
     process.stderr.write(`  ${label.padEnd(30)} ${alive.padEnd(12)} ${e.checkout_path}\n`);
   }
@@ -428,7 +478,7 @@ function hookCreated() {
   const label = herdr.eventWorktreeLabel() || path.basename(checkout);
   const repo = herdr.eventRepoName();
 
-  if (state.has(checkout)) return;
+  if (state.has(checkout) || state.preference(checkout).mode === "host") return;
   if (!dc.resolveConfigPath(checkout, config)) {
     const base = dc.configBaseDir(checkout, config);
     info(
@@ -481,9 +531,9 @@ function hookRemoved() {
   teardown(checkout);
 }
 
-function checkoutMissing(checkout) {
+function checkoutMissing(checkout, kind = "git") {
   try {
-    fs.statSync(path.join(checkout, ".git"));
+    fs.statSync(kind === "folder" ? checkout : path.join(checkout, ".git"));
     return false;
   } catch (err) {
     // Permission errors and other filesystem failures do not prove removal.
@@ -500,7 +550,7 @@ function startup() {
   const entries = state.list();
   let running = 0;
   for (const entry of entries) {
-    if (entry.cleanup_pending) continue;
+    if (entry.cleanup_pending || state.preference(entry.checkout_path).mode === "host") continue;
     if (!dc.containerIsRunning(entry.container_id)) continue;
     running += 1;
     const workspaceId = herdr.workspaceIdFor(entry.checkout_path);
@@ -518,7 +568,7 @@ function startup() {
 function cleanup(config = loadConfig()) {
   for (const entry of state.list()) {
     if (config.WTDC_KEEP_CONTAINER === "1" && !entry.cleanup_force) continue;
-    if (entry.cleanup_pending || checkoutMissing(entry.checkout_path)) {
+    if (entry.cleanup_pending || checkoutMissing(entry.checkout_path, entry.checkout_kind)) {
       teardown(entry.checkout_path, Boolean(entry.cleanup_force));
     }
   }
@@ -639,10 +689,55 @@ function actionInstallNativeCleanup() {
 }
 
 function actionProvision() {
-  const checkout = herdr.contextWorktree();
-  if (!checkout) die("this action must be invoked from a worktree workspace");
+  const checkout = actionCheckout();
   const workspaceId = process.env.HERDR_WORKSPACE_ID || "";
   provision(checkout, workspaceId, herdr.workspaceLabel(workspaceId) || path.basename(checkout));
+}
+
+function actionCheckout() {
+  const candidate = herdr.contextCheckout();
+  if (!candidate) die("this action needs a project or worktree workspace");
+  const root = tryRun("git", ["-C", candidate, "rev-parse", "--show-toplevel"]);
+  return path.resolve(root.status === 0 ? root.stdout.trim() : candidate);
+}
+
+function actionReopen(rebuild = false) {
+  const checkout = actionCheckout();
+  const workspaceId = process.env.HERDR_WORKSPACE_ID || "";
+  const opened = herdr.openPluginPane("prompt", {
+    placement: "overlay",
+    workspace: workspaceId,
+    cwd: checkout,
+    env: {
+      WTDC_CHECKOUT: checkout,
+      WTDC_WORKSPACE: workspaceId,
+      WTDC_LABEL: herdr.workspaceLabel(workspaceId) || path.basename(checkout),
+      WTDC_TARGET_PANE: "",
+      WTDC_REOPEN: "1",
+      WTDC_REBUILD: rebuild ? "1" : "0",
+    },
+  });
+  if (!opened) process.exitCode = 1;
+}
+
+function reopenHost(checkout, workspaceId = "") {
+  const previous = state.preference(checkout);
+  state.setPreference(checkout, { mode: "host" });
+  // Keep a host terminal alive before stopping the container's existing terminals.
+  if (workspaceId && !herdr.openHostTab(workspaceId, checkout)) {
+    state.setPreference(checkout, { mode: previous.mode || "container" });
+    die("could not open a host terminal; the container was left running");
+  }
+  const entry = state.get(checkout);
+  if (entry?.container_id) {
+    try {
+      dc.stopContainer(entry.container_id);
+    } catch (error) {
+      die(`host terminals are enabled, but the container could not be stopped: ${error.message}`);
+    }
+    unmarkContainerised(entry);
+  }
+  ok("reopened on the host; container and volumes kept for later reopening");
 }
 
 function actionTeardown() {
@@ -654,8 +749,8 @@ function actionTeardown() {
         workspaceId &&
         (entry.workspace_id === workspaceId || entry.marked_workspace_id === workspaceId),
     );
-  const checkout = herdr.contextWorktree() || saved?.checkout_path;
-  if (!checkout) die("this action must be invoked from a worktree workspace");
+  const checkout = herdr.contextCheckout() || saved?.checkout_path;
+  if (!checkout) die("this action needs a project or worktree workspace");
   teardown(checkout);
 }
 
@@ -748,6 +843,12 @@ function bootLaunch(checkout, workspaceId, label, targetPane) {
       WTDC_WORKSPACE: workspaceId,
       WTDC_TARGET_PANE: pane,
       ...(override ? { WTDC_OVERRIDE_IMAGE: override } : {}),
+      ...(process.env.WTDC_CONFIG_SOURCE_OVERRIDE
+        ? { WTDC_CONFIG_SOURCE_OVERRIDE: process.env.WTDC_CONFIG_SOURCE_OVERRIDE }
+        : {}),
+      ...(process.env.WTDC_REOPEN ? { WTDC_REOPEN: process.env.WTDC_REOPEN } : {}),
+      ...(process.env.WTDC_REBUILD ? { WTDC_REBUILD: process.env.WTDC_REBUILD } : {}),
+      ...(process.env.WTDC_REOPEN === "1" ? { WTDC_PRESERVE_PANES: "1" } : {}),
     },
   });
 }
@@ -784,6 +885,17 @@ function main() {
       if (!rest[0]) die("worktree path required");
       return teardown(rest[0], rest[1] === "--force" || rest[1] === "1");
     }
+    case "reopen-container":
+    case "rebuild-container": {
+      if (!rest[0]) die("checkout path required");
+      process.env.WTDC_REOPEN = "1";
+      process.env.WTDC_REBUILD = cmd === "rebuild-container" ? "1" : "0";
+      return provision(path.resolve(rest[0]), rest[1] || "", rest[2] || "");
+    }
+    case "reopen-host": {
+      if (!rest[0]) die("checkout path required");
+      return reopenHost(path.resolve(rest[0]), rest[1] || "");
+    }
     case "remove-worktree":
       return removeWorktree(rest[0], rest[1] === "--force");
     case "cleanup":
@@ -809,6 +921,9 @@ terminals inside it, keeping the worktree grouped under its repo.
   hook-removed            event hook: tear down a removed worktree
   startup                 startup hook: retry cleanup and report tracked containers
   provision <path> [ws] [label]
+  reopen-container <path> [ws] [label]     start/reuse the existing container
+  rebuild-container <path> [ws] [label]    apply the selected config again
+  reopen-host <path> [ws]                 stop container; keep volumes and checkout
   teardown  <path> [--force]
   remove-worktree <workspace-id> [--force]  clean Docker before Git removal
   cleanup                 retry pending or deleted-worktree cleanup
@@ -821,6 +936,10 @@ terminals inside it, keeping the worktree grouped under its repo.
     case "action": {
       const id = rest[0];
       if (id === "provision") return actionProvision();
+      if (id === "reopen-container") return actionReopen();
+      if (id === "rebuild-container") return actionReopen(true);
+      if (id === "reopen-host")
+        return reopenHost(actionCheckout(), process.env.HERDR_WORKSPACE_ID || "");
       if (id === "teardown") return actionTeardown();
       if (id === "remove-worktree") return removeWorktree(process.env.HERDR_WORKSPACE_ID);
       if (id === "cleanup") return cleanup();

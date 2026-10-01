@@ -105,9 +105,14 @@ if [ "$a1" = "pull" ]; then
   printf 'layer: Downloading 10MB/50MB\rlayer: Downloading 40MB/50MB\rlayer: Pull complete\n'
   exit 0
 fi
-if [ "$a1 $a2" = "ps -q" ]; then echo "deadbeefcafe"; exit 0; fi
+if [ "$a1 $a2" = "ps -q" ]; then
+  if [ "\${WTDC_STUB_STOPPED:-}" = "1" ] && [ ! -f "$WTDC_SANDBOX/restarted-container" ]; then exit 0; fi
+  echo "deadbeefcafe"; exit 0
+fi
 if [ "$a1 $a2" = "ps -aq" ]; then echo "deadbeefcafe"; exit 0; fi
 if [ "$a1" = "rename" ]; then exit 0; fi
+if [ "$a1" = "start" ]; then touch "$WTDC_SANDBOX/restarted-container"; exit 0; fi
+if [ "$a1" = "stop" ] && [ "\${WTDC_STUB_STOP_FAIL:-}" = "1" ]; then echo 'daemon unavailable' >&2; exit 1; fi
 if [ "$a1" = "inspect" ] && [ "$3" = "{{json .Mounts}}" ]; then echo '[]'; exit 0; fi
 if [ "$a1" = "inspect" ]; then echo "/workspaces/demo"; exit 0; fi
 if [ "$a1 $a2" = "exec getent" ] || [ "$a1" = "exec" ] && [ "$3" = "getent" ]; then
@@ -168,6 +173,10 @@ fs.writeFileSync(
 echo "$*" >> "$WTDC_SANDBOX/calls/herdr"
 a1="$1"; a2="$2"; a3="$3"
 if [ "$a1 $a2" = "workspace get" ]; then
+  if [ -n "\${WTDC_STUB_PROJECT_CWD:-}" ]; then
+    echo '{"result":{"workspace":{"workspace_id":"w9","active_tab_id":"w9:t1","label":"project"}}}'
+    exit 0
+  fi
   label="$(cat "$WTDC_SANDBOX/workspace-label" 2>/dev/null || printf demo)"
   printf '{"result":{"workspace":{"workspace_id":"w9","label":"%s"}}}\n' "$label"
   exit 0
@@ -190,6 +199,10 @@ fi
 # test can replace the topology through WTDC_STUB_PANES, to say "the pane the hook
 # captured is gone by the time the setup screen opens".
 if [ "$a1 $a2" = "pane list" ]; then
+  if [ -n "\${WTDC_STUB_PROJECT_CWD:-}" ]; then
+    printf '{"result":{"panes":[{"pane_id":"w9:p1","workspace_id":"w9","tab_id":"w9:t1","cwd":"%s"}]}}\\n' "$WTDC_STUB_PROJECT_CWD"
+    exit 0
+  fi
   if [ -n "\${WTDC_STUB_PANES:-}" ]; then echo "$WTDC_STUB_PANES"; exit 0; fi
   echo '{"result":{"panes":[
     {"pane_id":"w9:p1","workspace_id":"w9","focused":true},
@@ -1119,6 +1132,119 @@ test("main-checkout local features work in an older worktree and a failed build 
     /main-checkout-feature/,
   );
   assert.equal(fs.existsSync(path.join(checkout, ".devcontainer")), false);
+});
+
+function reopenFixture(name) {
+  const checkout = path.join(sandbox, "worktrees", name);
+  fs.mkdirSync(path.join(checkout, ".devcontainer"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, ".devcontainer/devcontainer.json"), '{"image":"debian:12"}');
+  const ready = wtdc(["provision", checkout, "w9", name]);
+  assert.equal(ready.status, 0, ready.stderr);
+  reset();
+  return checkout;
+}
+
+test("reopen reuses a running container without invoking the build CLI or removing data", () => {
+  const checkout = reopenFixture("reuse-running");
+  const result = wtdc(["reopen-container", checkout, "w9"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(calls("devcontainer"), /(?:^|\n)(?:up|build) /);
+  assert.doesNotMatch(calls("docker"), /(?:^|\n)(?:rm|volume rm|start) /);
+  assert.match(calls("herdr"), /--entrypoint container/);
+  assert.equal(state().preferences[checkout].mode, "container");
+});
+
+test("reopen on host stops the container, remembers host routing and retains all resource state", () => {
+  const checkout = reopenFixture("host-mode");
+  const entry = state().entries[checkout];
+  const result = wtdc(["reopen-host", checkout, "w9"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(calls("herdr"), /tab create --workspace w9 --cwd/);
+  assert.match(calls("docker"), /stop --time 30 deadbeefcafe/);
+  assert.doesNotMatch(calls("docker"), /(?:^|\n)(?:rm|volume rm) /);
+  assert.equal(state().preferences[checkout].mode, "host");
+  assert.equal(state().entries[checkout].container_id, entry.container_id);
+  assert.equal(fs.existsSync(entry.merged_config), true);
+  reset();
+  wtdc(["startup"]);
+  assert.doesNotMatch(calls("herdr"), /workspace rename w9 🐳 host-mode/);
+  const stopped = wtdc(["reopen-container", checkout, "w9"], { WTDC_STUB_STOPPED: "1" });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(calls("docker"), /start deadbeefcafe/);
+  assert.doesNotMatch(calls("devcontainer"), /(?:^|\n)(?:up|build) /);
+  assert.equal(state().preferences[checkout].mode, "container");
+});
+
+test("failed host stop leaves recovery state and working host routing", () => {
+  const checkout = reopenFixture("stop-failure");
+  const result = wtdc(["reopen-host", checkout, "w9"], { WTDC_STUB_STOP_FAIL: "1" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /container could not be stopped/);
+  assert.equal(state().preferences[checkout].mode, "host");
+  assert.equal(state().entries[checkout].container_id, "deadbeefcafe");
+  assert.doesNotMatch(calls("docker"), /(?:^|\n)(?:rm|volume rm) /);
+});
+
+test("a failed rebuild retains the previous container, DinD volumes and a retryable build intent", () => {
+  const checkout = reopenFixture("rebuild-failure");
+  const doc = state();
+  const volume = `wtdc-dind-docker-${"a".repeat(24)}`;
+  doc.entries[checkout].cleanup_volumes = [volume];
+  fs.writeFileSync(path.join(STATE_DIR, "state.json"), JSON.stringify(doc));
+  const result = wtdc(["rebuild-container", checkout, "w9"], { WTDC_STUB_UP_FAIL: "1" });
+  assert.equal(result.status, 1);
+  assert.equal(state().entries[checkout].container_id, "deadbeefcafe");
+  assert.deepEqual(state().entries[checkout].cleanup_volumes, [volume]);
+  assert.equal(state().entries[checkout].provision_pending, true);
+  assert.equal(state().preferences[checkout].mode, "host");
+  reset();
+  const retry = wtdc(["reopen-container", checkout, "w9"]);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.match(calls("devcontainer"), /up /);
+  assert.deepEqual(state().entries[checkout].cleanup_volumes, [volume]);
+  assert.equal(state().entries[checkout].provision_pending, false);
+});
+
+test("reopen actions resolve an ordinary project from its own tab instead of the focused workspace", () => {
+  reset();
+  const result = wtdc(["action", "reopen-container"], {
+    HERDR_WORKSPACE_ID: "w9",
+    HERDR_PLUGIN_CONTEXT_JSON: "{}",
+    WTDC_STUB_PROJECT_CWD: REPO,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(calls("herdr"), /--entrypoint prompt/);
+  assert.ok(calls("herdr").includes(`WTDC_CHECKOUT=${REPO}`));
+  assert.match(calls("herdr"), /WTDC_REOPEN=1/);
+  assert.equal(calls("devcontainer"), "");
+});
+
+test("reopen handoff preserves existing panes and carries the chosen config source", () => {
+  reset();
+  const result = wtdc(["boot-launch", WT, "w9", "demo", "w9:p1"], {
+    WTDC_REOPEN: "1",
+    WTDC_REBUILD: "1",
+    WTDC_CONFIG_SOURCE_OVERRIDE: "worktree",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(calls("herdr"), /WTDC_PRESERVE_PANES=1/);
+  assert.match(calls("herdr"), /WTDC_REBUILD=1/);
+  assert.match(calls("herdr"), /WTDC_CONFIG_SOURCE_OVERRIDE=worktree/);
+});
+
+test("host choice without a container suppresses automatic offers without becoming a cleanup entry", () => {
+  const checkout = path.join(sandbox, "never-container");
+  fs.mkdirSync(path.join(checkout, ".devcontainer"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, ".devcontainer/devcontainer.json"), '{"image":"debian:12"}');
+  wtdc(["reopen-host", checkout]);
+  reset();
+  wtdc(["hook-created"], {
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify({ worktree: { path: checkout } }),
+    WTDC_ON_CREATE: "auto",
+  });
+  assert.equal(calls("herdr"), "");
+  assert.equal(state().entries[checkout], undefined);
+  assert.equal(state().preferences[checkout].mode, "host");
 });
 
 test.after(() => {

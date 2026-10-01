@@ -175,13 +175,36 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 
 | Action                   | What it does                                                                   |
 | ------------------------ | ------------------------------------------------------------------------------ |
+| `reopen-container`       | choose config, then start/reuse the project's or worktree's container          |
+| `rebuild-container`      | rebuild from the selected config and reopen, preserving named volumes          |
+| `reopen-host`            | open a host terminal and stop the container, keeping its data for later        |
 | `provision`              | build a container for the current worktree                                     |
 | `status`                 | list tracked worktrees and whether their containers run                        |
-| `teardown`               | destroy the current worktree's container                                       |
+| `teardown`               | destroy the container and its owned DinD storage                               |
 | `remove-worktree`        | remove the containers and DinD volumes before deleting the Git worktree        |
 | `cleanup`                | retry pending cleanup and reclaim tracked resources whose Git metadata is gone |
 | `install-native-cleanup` | enable Docker-first ordering in Herdr's native worktree removal                |
 | `install-shell`          | point `terminal.default_shell` at the dispatcher, back up the config, reload   |
+
+Use the workspace's **Dev container: reopen in container…** action for an existing
+project or worktree. In a linked worktree, press **c** in the dialog to switch
+between **Main checkout** and **This worktree**. The preview, cache check and
+resulting build use that selection. Accepting remembers it for that checkout;
+canceling leaves the saved choice alone. A missing selected config is shown as
+missing, so you can create or edit it while the dialog is open.
+
+Press **r** to choose a rebuild, or use **Dev container: rebuild and reopen…**
+after editing the config. Switching config source also requires a rebuild.
+Reopening with the same source starts the saved container without an image build;
+if it was removed, the plugin creates another. Existing project panes are kept.
+
+**Dev container: reopen on host (keep data)** remembers host mode, opens a host
+terminal, and stops that checkout's container. New panes use the host even after
+Herdr restarts. The stopped container and both DinD storage volumes remain so
+you can reopen later without losing nested Docker/Postgres data. A rebuild also
+keeps named volumes; programs running in the container stop when it is replaced.
+Use **destroy container and DinD data** or **remove worktree, container and
+volumes** when you intend to delete that storage.
 
 ## How it works
 
@@ -245,9 +268,10 @@ it off disk rather than out of a commit. A worktree records the commit it was cr
 not the branch it came from, so "the config as of the branch it branched from" is not a
 question git can answer — and a worktree nobody has merged yet holds a config that is
 already behind. Reading the main checkout means an edit there applies to every worktree at
-once, uncommitted, which is where edits actually happen. Set `WTDC_CONFIG_SOURCE=worktree`
-when a branch legitimately changes its own `devcontainer.json`; the dialog then shows which
-checkout the config came from, and the container is built from that worktree's own copy.
+once, uncommitted, which is where edits actually happen. Choose **This worktree** in
+the reopen dialog when a branch changes its own `devcontainer.json`; the selection
+is saved per checkout. `WTDC_CONFIG_SOURCE=worktree` sets the global default for
+checkouts without a saved choice. The dialog shows which checkout supplies the file.
 
 When the main config references `${localWorkspaceFolder}/.devcontainer`, the plugin
 copies the main checkout's `.devcontainer` files into a private directory beside

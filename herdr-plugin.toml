@@ -20,8 +20,26 @@ command = ["node", "bin/wtdc.mjs", "hook-removed"]
 command = ["node", "bin/wtdc.mjs", "startup"]
 
 [[actions]]
+id = "reopen-container"
+title = "Dev container: reopen in container…"
+contexts = ["workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "reopen-container"]
+
+[[actions]]
+id = "rebuild-container"
+title = "Dev container: rebuild and reopen…"
+contexts = ["workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "rebuild-container"]
+
+[[actions]]
+id = "reopen-host"
+title = "Dev container: reopen on host (keep data)"
+contexts = ["workspace"]
+command = ["node", "bin/wtdc.mjs", "action", "reopen-host"]
+
+[[actions]]
 id = "provision"
-title = "Dev container: create for this worktree"
+title = "Dev container: create for this project/worktree"
 contexts = ["workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "provision"]
 
@@ -33,7 +51,7 @@ command = ["node", "bin/wtdc.mjs", "action", "status"]
 
 [[actions]]
 id = "teardown"
-title = "Dev container: destroy for this worktree"
+title = "Dev container: destroy container and DinD data"
 contexts = ["workspace"]
 command = ["node", "bin/wtdc.mjs", "action", "teardown"]
 

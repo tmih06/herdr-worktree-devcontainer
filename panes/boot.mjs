@@ -287,7 +287,8 @@ function handOver() {
   }
 
   // Only ever the pane the hook identified, and never this one.
-  if (hostPane && hostPane !== selfPane) closePane(hostPane);
+  if (hostPane && hostPane !== selfPane && process.env.WTDC_PRESERVE_PANES !== "1")
+    closePane(hostPane);
 
   process.stdout.write("\x1b[?25h");
   const status = enterContainerShell(entry, checkout, {

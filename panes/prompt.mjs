@@ -20,7 +20,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { loadConfig } from "./../lib/wtdc/config.mjs";
-import { configBaseDir, resolveConfigPath, planProvision } from "./../lib/wtdc/devcontainer.mjs";
+import {
+  configBaseDir,
+  configForCheckout,
+  mainWorktree,
+  resolveConfigPath,
+  planProvision,
+} from "./../lib/wtdc/devcontainer.mjs";
+import { get as stateFor, setPreference } from "./../lib/wtdc/state.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.HERDR_PLUGIN_ROOT || path.resolve(here, "..");
@@ -48,7 +55,15 @@ if (!checkout) {
   process.exit(1);
 }
 
-const config = loadConfig();
+const config = configForCheckout(checkout, loadConfig());
+const mainCheckout = mainWorktree(checkout);
+const existing = stateFor(checkout);
+const reopening = process.env.WTDC_REOPEN === "1";
+let rebuild = process.env.WTDC_REBUILD === "1";
+let decisionError = "";
+const selectedSource = () => config.WTDC_CONFIG_SOURCE_OVERRIDE || config.WTDC_CONFIG_SOURCE;
+const needsRebuild = () =>
+  rebuild || Boolean(existing?.container_id && existing.source_config !== found) || imageDirty;
 
 // The plan is resolved synchronously because it is only file parsing and a git call —
 // cheap, and it is what the checkbox line has to be about. The image's local and
@@ -56,7 +71,7 @@ const config = loadConfig();
 // The config can live in the main checkout rather than in this worktree, so the line says
 // which checkout it came from. A bare `../../../../mnt/e/.../devcontainer.json` would be
 // true and unreadable, and the whole point of the line is that it can be acted on.
-const configBase = configBaseDir(checkout, config);
+let configBase = configBaseDir(checkout, config);
 const describeConfig = (file) => {
   if (!file) return `${C.yellow}none found${C.reset}`;
   const rel = path.relative(configBase, file) || path.basename(file);
@@ -146,6 +161,7 @@ function replan() {
   const typed = imageBuf;
   const wasDirty = imageDirty;
 
+  configBase = configBaseDir(checkout, config);
   found = resolveConfigPath(checkout, config);
   configRel = describeConfig(found);
   plan = null;
@@ -222,6 +238,16 @@ function render(toggle) {
     rows.length = 0;
     row("Worktree", label, `${C.dim}${checkout}${C.reset}`);
     row("Config", configRel, `${C.dim}repo ${repo || "unknown"}${C.reset}`);
+    if (mainCheckout)
+      row(
+        "Source",
+        `${configBase === checkout ? "This worktree" : "Main checkout"}  ${C.dim}c to switch${C.reset}`,
+      );
+    if (reopening)
+      row(
+        "Operation",
+        `${needsRebuild() ? "Rebuild and reopen" : existing?.container_id ? "Reopen existing container (recreate if missing)" : "Create container"}  ${C.dim}r to toggle rebuild${C.reset}`,
+      );
 
     // Where the image on screen came from. An edit in this dialog is the one source the
     // config file cannot show, so it is named rather than left to be inferred from a caret.
@@ -288,7 +314,13 @@ function render(toggle) {
     // that says "a docker run" and then spends half a minute building an image is not a
     // description of anything.
     const bits = [];
-    if (featureCache?.state === "hit")
+    const reuseExisting =
+      reopening && existing?.container_id && !existing.provision_pending && !needsRebuild();
+    if (reuseExisting)
+      bits.push(
+        `${C.green}starts/reuses the saved container${C.reset} — rebuild only if it is missing`,
+      );
+    else if (featureCache?.state === "hit")
       bits.push(`${C.green}reuses cached image${C.reset} — creates a container`);
     else if (plan.buildsImage && (!featureCache || featureCache.state === "error"))
       bits.push(
@@ -298,11 +330,11 @@ function render(toggle) {
       bits.push(`${C.yellow}builds an image for this worktree (~25s+)${C.reset}`);
     else bits.push(`${C.green}no image build from features${C.reset} — a docker run`);
     const remap = featureCache?.uidRemap || plan.uidRemap;
-    if (remap === "differs") {
+    if (!reuseExisting && remap === "differs") {
       bits.push(
         `${C.yellow}and a uid-matched copy of the image${C.reset} ${C.dim}(~300 MB, tens of seconds)${C.reset}`,
       );
-    } else if (remap === "unknown") {
+    } else if (!reuseExisting && remap === "unknown") {
       bits.push(`${C.dim}and a uid-matched copy if the image's user is not your uid${C.reset}`);
     }
     if (plan.remoteUser) bits.push(`${C.dim}user ${plan.remoteUser}${C.reset}`);
@@ -312,8 +344,16 @@ function render(toggle) {
     rows.length = 0;
     row("Worktree", label, `${C.dim}${checkout}${C.reset}`);
     row("Config", configRel, `${C.dim}repo ${repo || "unknown"}${C.reset}`);
+    if (mainCheckout)
+      row(
+        "Source",
+        `${configBase === checkout ? "This worktree" : "Main checkout"}  ${C.dim}c to switch${C.reset}`,
+      );
+    if (!found)
+      row("", `${C.yellow}create a config in ${configBase} or switch config source${C.reset}`);
     if (plan && plan.error) row("", `${C.yellow}cannot read it: ${plan.error}${C.reset}`);
   }
+  if (decisionError) row("", `${C.yellow}${decisionError}${C.reset}`);
 
   const width = Math.max(...rows.map(([l]) => l.length));
   const body = rows
@@ -335,12 +375,12 @@ function render(toggle) {
   const pointer = (on) => (on ? `${C.cyan}❯${C.reset}` : " ");
   const answerLine =
     `${pointer(focus === FOCUS_ANSWER)} ${C.green}[${toggle}]${C.reset} ` +
-    "Create a dev container for this worktree";
+    (reopening ? "Reopen in dev container" : "Create a dev container for this worktree");
 
   const keys =
     focus === FOCUS_IMAGE
       ? `${C.dim}type to edit    ⏎ done    esc revert    ↑↓ move${C.reset}`
-      : `${C.dim}y/⏎ yes    n/esc/q no    space toggle    ↑↓ to the image${C.reset}`;
+      : `${C.dim}y/⏎ yes    n/esc/q no    space toggle    ↑↓ to the image${mainCheckout ? "    c config source" : ""}${reopening ? "    r rebuild" : ""}${C.reset}`;
 
   process.stdout.write(`\x1b[2J\x1b[H
 ${C.cyan}  Dev container${C.reset}
@@ -390,6 +430,11 @@ function ask() {
     };
 
     const finish = (answer) => {
+      if (answer && (!found || plan?.error)) {
+        decisionError = "Choose a valid devcontainer config before reopening.";
+        render(toggle);
+        return;
+      }
       answered = true;
       clearTimeout(imageCheckTimer);
       clearTimeout(escapeTimer);
@@ -458,6 +503,23 @@ function ask() {
       }
 
       if (ch === "\r" || ch === "\n") return finish(true);
+      if (ch === "c" && mainCheckout) {
+        config.WTDC_CONFIG_SOURCE_OVERRIDE = configBase === checkout ? "main" : "worktree";
+        decisionError = "";
+        stopLookup(imageLookup);
+        imageLookup = null;
+        replan();
+        remember();
+        refreshImageLater();
+        refreshCacheLater();
+        render(toggle);
+        return false;
+      }
+      if (ch === "r" && reopening) {
+        rebuild = !rebuild;
+        render(toggle);
+        return false;
+      }
       if (ch === "y" || ch === "Y") return finish(true);
       if (ch === "n" || ch === "N" || ch === "q" || ch === "Q") return finish(false);
       if (ch === " ") toggle = toggle === " " ? "x" : " ";
@@ -601,6 +663,7 @@ function refreshCacheLater() {
     {
       stdio: ["ignore", "pipe", "ignore"],
       detached: process.platform !== "win32",
+      env: { ...process.env, WTDC_CONFIG_SOURCE_OVERRIDE: selectedSource() },
     },
   );
   cacheLookup = child;
@@ -646,6 +709,7 @@ const stampOf = (file) => {
   }
 };
 const remember = () => {
+  watched.clear();
   // Watched in the base directory, which is the main checkout when the config is read from
   // there. Watching the worktree instead would make the dialog blind to the only file that
   // is actually being edited — and it would sit there looking correct, which is worse.
@@ -654,10 +718,12 @@ const remember = () => {
   }
   // Also watch where the worktree's own copy would be, so a config that is edited in the
   // worktree still registers while `WTDC_CONFIG_SOURCE` is `main` — it just does not win.
-  if (configBase !== checkout) {
+  if (mainCheckout) {
     for (const file of config.WTDC_CONFIG_CANDIDATES.trim().split(/\s+/).filter(Boolean)) {
-      const abs = path.resolve(checkout, file);
-      if (!watched.has(abs)) watched.set(abs, stampOf(abs));
+      for (const base of [checkout, mainCheckout]) {
+        const abs = path.resolve(base, file);
+        if (!watched.has(abs)) watched.set(abs, stampOf(abs));
+      }
     }
   }
 };
@@ -706,6 +772,9 @@ watcher.unref();
 const accepted = await answer;
 clearInterval(watcher);
 if (!accepted) process.exit(0);
+setPreference(checkout, { config_source: selectedSource() });
+process.env.WTDC_CONFIG_SOURCE_OVERRIDE = selectedSource();
+if (needsRebuild()) process.env.WTDC_REBUILD = "1";
 
 // An image typed into the field is what gets built, so it has to travel with the build.
 // Environment only, and only when the field was actually changed: left alone, the config's
