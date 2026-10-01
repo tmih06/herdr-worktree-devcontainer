@@ -186,8 +186,40 @@ Set `WTDC_ON_CREATE=auto` to skip the question, or `never` to do nothing.
 | `install-native-cleanup` | enable Docker-first ordering in Herdr's native worktree removal                |
 | `install-shell`          | point `terminal.default_shell` at the dispatcher, back up the config, reload   |
 
-Use the workspace's **Dev container: reopen in container…** action for an existing
-project or worktree. In a linked worktree, press **c** in the dialog to switch
+Herdr 0.9.1 does not display plugin actions in the workspace right-click menu.
+Focus the project or worktree you want to reopen and invoke the action:
+
+```sh
+herdr plugin action invoke worktree-devcontainer.reopen-container
+```
+
+For TUI shortcuts, add these entries to `~/.config/herdr/config.toml` and run
+`herdr config check`, then `herdr server reload-config`. With the default prefix,
+press **Ctrl+B**, release it, then **d** to reopen, **f** to rebuild, or **u** to
+return to the host. Each action targets the focused workspace. Choose different
+keys if these conflict with your existing bindings.
+
+```toml
+[[keys.command]]
+key = "prefix+d"
+type = "plugin_action"
+command = "worktree-devcontainer.reopen-container"
+description = "Reopen in dev container"
+
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "worktree-devcontainer.rebuild-container"
+description = "Rebuild and reopen in dev container"
+
+[[keys.command]]
+key = "prefix+u"
+type = "plugin_action"
+command = "worktree-devcontainer.reopen-host"
+description = "Reopen on host (keep container data)"
+```
+
+In a linked worktree, press **c** in the dialog to switch
 between **Main checkout** and **This worktree**. The preview, cache check and
 resulting build use that selection. Accepting remembers it for that checkout;
 canceling leaves the saved choice alone. A missing selected config is shown as
