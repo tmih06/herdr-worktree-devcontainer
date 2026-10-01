@@ -146,14 +146,21 @@ master, slave = pty.openpty()
 child = subprocess.Popen([sys.argv[1], sys.argv[2]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
 os.close(slave)
 output = b""
-try:
-    deadline = time.monotonic() + 5
+def read_frame(expected, timeout=5):
+    global output
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         ready, _, _ = select.select([master], [], [], 0.05)
         if ready:
-            output += os.read(master, 65536)
-        if sys.argv[3].encode() in output:
-            break
+            # Force fragmented PTY reads so an early substring cannot masquerade
+            # as a complete render (the CI regression this helper guards).
+            output += os.read(master, 1)
+        frame = output.rsplit(b"\\x1b[2J\\x1b[H", 1)[-1]
+        if expected.encode() in frame and b"y/" in frame and frame.endswith(b"\\x1b[0m\\r\\n\\r\\n"):
+            return
+    raise AssertionError("Timed out waiting for complete dialog frame: " + expected)
+try:
+    read_frame(sys.argv[3])
     ${after || "pass"}
     os.write(master, b"n")
     child.wait(timeout=2)
@@ -219,13 +226,7 @@ test("the dialog reports a cold cache and a feature-only hit accurately", (t) =>
   assert.match(hit, /uid-matched copy if/);
 });
 
-const waitForFrame = (text) => `deadline = time.monotonic() + 4
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.05)
-        if ready:
-            output += os.read(master, 65536)
-        if ${JSON.stringify(text)}.encode() in output:
-            break`;
+const waitForFrame = (text) => `read_frame(${JSON.stringify(text)}, 4)`;
 
 test("editing a local feature while the dialog is open invalidates its displayed cache hit", (t) => {
   const f = fixture(t);
