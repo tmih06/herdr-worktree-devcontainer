@@ -435,6 +435,27 @@ test("compareImage: only a matching digest means up to date", async () => {
   );
 });
 
+test("compareImage: an index-vs-manifest match is current, a mismatch is not evidence", async () => {
+  const { compareImage } = await import("../lib/wtdc/imageInfo.mjs");
+  // Single-arch pulls store the manifest digest in RepoDigests; it compares to
+  // the platform manifest digest, so equality is a real up-to-date answer.
+  assert.equal(
+    compareImage({ digest: "sha256:aaa" }, { manifestDigest: "sha256:aaa" }),
+    "up-to-date",
+  );
+  // A multi-arch pull stores the index digest. When only the platform manifest
+  // digest was resolved, a mismatch is unknown — not an update. This is the
+  // containerd-store case that reported every current image as stale.
+  assert.equal(
+    compareImage({ digest: "sha256:index", configDigest: "" }, { manifestDigest: "sha256:mani" }),
+    "unknown",
+  );
+  assert.equal(
+    compareImage({ digest: "sha256:a", configDigest: "" }, { manifestDigest: "sha256:b", configDigest: "" }),
+    "unknown",
+  );
+});
+
 test("formatSize: sizes a pull, which are large, without lying about small ones", async () => {
   const { formatSize } = await import("../lib/wtdc/imageInfo.mjs");
   assert.equal(formatSize(0), "", "no size is better than a rounded-up wrong one");

@@ -3,18 +3,78 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const sha = (ch) => `sha256:${ch.repeat(64)}`;
+
+// A real HTTP registry on the loopback, so the digest probe exercises the OCI
+// API path end to end (challenge → token → Docker-Content-Digest), not a stub
+// inside the process. Runs as its own child because describe() is spawnSync —
+// the parent event loop is blocked while the lookup runs.
+function startRegistry(t, dir, mode, digest) {
+  fs.writeFileSync(
+    path.join(dir, "registry.mjs"),
+    `import http from "node:http";
+import fs from "node:fs";
+const digest = process.env.IMAGE_TEST_DIGEST;
+const server = http.createServer((req, res) => {
+  const pathname = new URL(req.url, "http://x").pathname;
+  if (pathname === "/token") {
+    res.writeHead(200, {"content-type": "application/json"});
+    res.end(JSON.stringify({token: "test-token"}));
+    return;
+  }
+  if (pathname === "/v2/repo/manifests/latest") {
+    if (["registry", "fallback-unavailable", "snap-unavailable"].includes(process.env.IMAGE_TEST_MODE)) {
+      res.writeHead(500).end("registry unavailable");
+      return;
+    }
+    if (!req.headers.authorization) {
+      res.writeHead(401, {"www-authenticate": \`Bearer realm="http://127.0.0.1:\${server.address().port}/token",service="test",scope="repository:repo:pull"\`});
+      res.end();
+      return;
+    }
+    res.writeHead(200, {"docker-content-digest": digest});
+    res.end();
+    return;
+  }
+  res.writeHead(404).end();
+});
+server.listen(0, "127.0.0.1", () => {
+  fs.writeFileSync(process.env.IMAGE_TEST_PORT_FILE, String(server.address().port));
+});
+`,
+  );
+  const portFile = path.join(dir, "port");
+  const child = spawn(process.execPath, [path.join(dir, "registry.mjs")], {
+    env: {...process.env, IMAGE_TEST_MODE: mode, IMAGE_TEST_DIGEST: digest, IMAGE_TEST_PORT_FILE: portFile},
+    stdio: "ignore",
+  });
+  t.after(() => child.kill());
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(portFile)) {
+    if (Date.now() > deadline) throw new Error("stub registry did not start");
+    spawnSync("sleep", ["0.05"]);
+  }
+  return fs.readFileSync(portFile, "utf8").trim();
+}
 
 function imageFixture(t, mode) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtdc-image-check-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // snap-* modes simulate the containerd image store: the local Id is the tag
+  // digest itself, so RepoDigests and Id carry the same value and there is no
+  // separate config digest to compare.
+  const stale = /-stale|snap-stale/.test(mode);
+  const tagDigest = stale ? sha("b") : sha("a");
+  const port = startRegistry(t, dir, mode, tagDigest);
+  const ref = `127.0.0.1:${port}/repo:latest`;
   const checkout = path.join(dir, "checkout");
   fs.mkdirSync(path.join(checkout, ".devcontainer"), { recursive: true });
   fs.writeFileSync(
     path.join(checkout, ".devcontainer", "devcontainer.json"),
-    '{"image":"fixture:latest"}',
+    JSON.stringify({image: ref}),
   );
   fs.writeFileSync(
     path.join(dir, "docker"),
@@ -22,26 +82,31 @@ function imageFixture(t, mode) {
 import fs from "node:fs";
 const args = process.argv.slice(2);
 const mode = process.env.IMAGE_TEST_MODE;
+const ref = process.env.IMAGE_TEST_REF;
+const snap = mode.startsWith("snap-");
+const localTag = ${JSON.stringify(sha("a"))};
+const pulled = fs.existsSync(process.env.IMAGE_TEST_PULLED);
+const localRepoDigest = pulled ? ${JSON.stringify(sha("b"))} : localTag;
+const localConfig = snap ? localRepoDigest : (pulled ? "sha256:config-new" : "sha256:config-current");
 if (args[0] === "pull") {
   fs.writeFileSync(process.env.IMAGE_TEST_PULLED, "pulled");
   process.exit(0);
 }
 if (args[0] === "image" && args[1] === "inspect") {
   if (mode === "daemon" || mode === "absent" || mode === "fallback-absent") {
-    console.error(mode === "daemon" ? "Cannot connect to the Docker daemon" : "Error response from daemon: No such image: fixture:latest");
+    console.error(mode === "daemon" ? "Cannot connect to the Docker daemon" : "Error response from daemon: No such image: " + ref);
     process.exit(1);
   }
   const format = args[args.indexOf("--format") + 1];
   if (format.startsWith("{{.Size}}|{{json .RepoDigests}}")) {
-    const metadata = mode === "no-digest" || mode === "fallback-no-digest" ? "1048576|[]" : '1048576|["fixture@sha256:local"]';
-    const config = mode === "fallback-stale" && fs.existsSync(process.env.IMAGE_TEST_PULLED) ? "sha256:config-new" : "sha256:config-current";
-    console.log(metadata + (format.endsWith("|{{.Id}}") ? "|" + config : ""));
+    const metadata = mode === "no-digest" || mode === "fallback-no-digest" ? "1048576|[]" : \`1048576|["\${ref.replace(/:[^/]+$/, "")}@\${localRepoDigest}"]\`;
+    console.log(metadata + (format.endsWith("|{{.Id}}") ? "|" + localConfig : ""));
   } else if (format === "{{.Os}}/{{.Architecture}}") {
     console.log("linux/" + process.arch.replace("x64", "amd64"));
   }
   process.exit(0);
 }
-if (mode.startsWith("fallback-")) {
+if (mode.startsWith("fallback-") || snap) {
   if (args[0] === "buildx") {
     console.error("docker: unknown command: docker buildx");
     process.exit(1);
@@ -60,7 +125,7 @@ if (mode.startsWith("fallback-")) {
   const key = mode === "fallback-schema-v2" ? "SchemaV2Manifest" : "OCIManifest";
   const entries = [{Descriptor: {platform: {os: "linux", architecture: other}}, [key]: manifest("sha256:config-current")}];
   if (mode !== "fallback-no-platform") {
-    entries.push({Descriptor: {platform: {os: "linux", architecture: arch}}, [key]: manifest(mode === "fallback-stale" ? "sha256:config-new" : "sha256:config-current")});
+    entries.push({Descriptor: {platform: {os: "linux", architecture: arch}, digest: ${JSON.stringify(sha("c"))}}, [key]: manifest(mode === "fallback-stale" ? "sha256:config-new" : "sha256:config-current")});
   }
   if (mode === "fallback-legacy") {
     entries[1].Platform = entries[1].Descriptor.platform;
@@ -73,7 +138,7 @@ if (mode === "registry" || mode === "buildx") {
   console.error(mode === "buildx" ? "docker: unknown command: docker buildx" : "registry unavailable");
   process.exit(1);
 }
-if (args[0] === "buildx") console.log("Digest: sha256:local");
+if (args[0] === "buildx") console.log("Digest: " + localTag);
 else console.log("{}");
 `,
     { mode: 0o755 },
@@ -82,6 +147,7 @@ else console.log("{}");
     ...process.env,
     PATH: `${dir}:${process.env.PATH}`,
     IMAGE_TEST_MODE: mode,
+    IMAGE_TEST_REF: ref,
     IMAGE_TEST_PULLED: path.join(dir, "pulled"),
     HERDR_PLUGIN_ROOT: ROOT,
     HERDR_PLUGIN_CONFIG_DIR: path.join(dir, "config"),
@@ -110,7 +176,7 @@ else console.log("{}");
     describe: () => {
       const result = spawnSync(
         process.execPath,
-        [path.join(ROOT, "lib/wtdc/imageInfo.mjs"), "fixture:latest"],
+        [path.join(ROOT, "lib/wtdc/imageInfo.mjs"), ref],
         { env, encoding: "utf8", timeout: 5000 },
       );
       assert.equal(result.status, 0, result.stderr);
@@ -173,12 +239,23 @@ test("a local image without a registry digest explains the missing comparison", 
   assert.doesNotMatch(output, /local state unknown/);
 });
 
-test("missing Buildx reports its error while retaining known local availability", (t) => {
+test("missing Buildx still resolves the published digest over the registry API", (t) => {
   const f = imageFixture(t, "buildx");
   const described = f.describe();
   assert.equal(described.localState, "present");
-  assert.match(described.reason, /unknown command: docker buildx/);
-  assert.match(f.prompt(), /already pulled.*published version unavailable.*docker buildx/);
+  assert.equal(described.state, "up-to-date");
+});
+
+test("a containerd-store image whose Id is the tag digest reports current, not stale", (t) => {
+  const f = imageFixture(t, "snap-current");
+  const described = f.describe();
+  assert.equal(described.state, "up-to-date");
+  assert.match(f.prompt(), /already pulled, same as published/);
+});
+
+test("a containerd-store image still detects a moved tag", (t) => {
+  const f = imageFixture(t, "snap-stale");
+  assert.equal(f.describe().state, "update-available");
 });
 
 test("without Buildx, the host's manifest config identifies an up-to-date image", (t) => {
@@ -237,18 +314,16 @@ test("the manifest fallback supplies the compressed download size for an absent 
   assert.equal(described.size, "1 MB");
 });
 
-test("a manifest for another architecture cannot imply a current image", (t) => {
+test("a manifest for another architecture does not block the tag-digest answer", (t) => {
   const f = imageFixture(t, "fallback-no-platform");
   const described = f.describe();
-  assert.equal(described.state, "unknown");
-  assert.match(described.reason, /no manifest for linux\//);
+  assert.equal(described.state, "up-to-date");
 });
 
-test("malformed manifest output cannot imply a current image", (t) => {
+test("malformed manifest output does not block the tag-digest answer", (t) => {
   const f = imageFixture(t, "fallback-malformed");
   const described = f.describe();
-  assert.equal(described.state, "unknown");
-  assert.match(described.reason, /invalid manifest/);
+  assert.equal(described.state, "up-to-date");
 });
 
 test("if the fallback also fails, report the registry failure", (t) => {
