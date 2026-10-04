@@ -19,8 +19,13 @@ function imageFixture(t, mode) {
   fs.writeFileSync(
     path.join(dir, "docker"),
     `#!${process.execPath}
+import fs from "node:fs";
 const args = process.argv.slice(2);
 const mode = process.env.IMAGE_TEST_MODE;
+if (args[0] === "pull") {
+  fs.writeFileSync(process.env.IMAGE_TEST_PULLED, "pulled");
+  process.exit(0);
+}
 if (args[0] === "image" && args[1] === "inspect") {
   if (mode === "daemon" || mode === "absent" || mode === "fallback-absent") {
     console.error(mode === "daemon" ? "Cannot connect to the Docker daemon" : "Error response from daemon: No such image: fixture:latest");
@@ -29,7 +34,8 @@ if (args[0] === "image" && args[1] === "inspect") {
   const format = args[args.indexOf("--format") + 1];
   if (format.startsWith("{{.Size}}|{{json .RepoDigests}}")) {
     const metadata = mode === "no-digest" || mode === "fallback-no-digest" ? "1048576|[]" : '1048576|["fixture@sha256:local"]';
-    console.log(metadata + (format.endsWith("|{{.Id}}") ? "|sha256:config-current" : ""));
+    const config = mode === "fallback-stale" && fs.existsSync(process.env.IMAGE_TEST_PULLED) ? "sha256:config-new" : "sha256:config-current";
+    console.log(metadata + (format.endsWith("|{{.Id}}") ? "|" + config : ""));
   } else if (format === "{{.Os}}/{{.Architecture}}") {
     console.log("linux/" + process.arch.replace("x64", "amd64"));
   }
@@ -76,6 +82,7 @@ else console.log("{}");
     ...process.env,
     PATH: `${dir}:${process.env.PATH}`,
     IMAGE_TEST_MODE: mode,
+    IMAGE_TEST_PULLED: path.join(dir, "pulled"),
     HERDR_PLUGIN_ROOT: ROOT,
     HERDR_PLUGIN_CONFIG_DIR: path.join(dir, "config"),
     HERDR_PLUGIN_STATE_DIR: path.join(dir, "state"),
@@ -86,6 +93,20 @@ else console.log("{}");
     WTDC_OVERRIDE_IMAGE: "",
   };
   return {
+    provision: () => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { buildMerged } from ${JSON.stringify(path.join(ROOT, "lib/wtdc/devcontainer.mjs"))};
+          buildMerged(${JSON.stringify(path.join(checkout, ".devcontainer/devcontainer.json"))}, ${JSON.stringify(path.join(dir, "merged.json"))}, {});`,
+        ],
+        { env, encoding: "utf8", timeout: 5000 },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return fs.existsSync(env.IMAGE_TEST_PULLED);
+    },
     describe: () => {
       const result = spawnSync(
         process.execPath,
@@ -170,6 +191,26 @@ test("without Buildx, a changed host manifest config reports an available update
   const f = imageFixture(t, "fallback-stale");
   assert.equal(f.describe().state, "update-available");
   assert.match(f.prompt(), /newer image published/);
+});
+
+test("provisioning a stale local tag clears the published-image warning", (t) => {
+  const f = imageFixture(t, "fallback-stale");
+  assert.equal(f.describe().state, "update-available");
+  f.provision();
+  assert.equal(f.describe().state, "up-to-date");
+  assert.match(f.prompt(), /already pulled, same as published/);
+});
+
+test("provisioning keeps a current local image without pulling", (t) => {
+  const f = imageFixture(t, "fallback-current");
+  assert.equal(f.provision(), false);
+  assert.equal(f.describe().state, "up-to-date");
+});
+
+test("an unavailable registry does not force a pull of an existing image", (t) => {
+  const f = imageFixture(t, "fallback-unavailable");
+  assert.equal(f.provision(), false);
+  assert.equal(f.describe().localState, "present");
 });
 
 test("the manifest fallback supports a single Docker schema v2 manifest", (t) => {

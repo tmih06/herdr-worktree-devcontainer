@@ -63,6 +63,11 @@ edit the image, **c** to switch between the main checkout's config and this
 worktree's config, and **r** to rebuild. Config selection is remembered per checkout.
 Editing the image keeps the config's features.
 
+Before a new setup or rebuild, the plugin pulls a missing image or a confirmed
+published update. A current local image is reused; if the registry check fails,
+an existing image remains usable. The dialog shows local size on disk for present
+images and compressed download size for missing images.
+
 New panes follow the checkout's selected container or host mode. Reopening keeps
 existing panes; rebuild after changing the config or its source. Returning to the
 host and rebuilding both preserve Docker-in-Docker data; `teardown` deletes it.
