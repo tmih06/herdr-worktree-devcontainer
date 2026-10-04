@@ -11,7 +11,7 @@ ARG TYPOS_VERSION=1.35.5
 ARG OASDIFF_VERSION=1.17.0
 
 USER root
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN set -eux; \
     apt-get update; \
@@ -32,12 +32,16 @@ COPY --chmod=0755 install-pinned-tools.sh install-agent-tools.sh /usr/local/shar
 RUN /usr/local/share/vibecode-essential/install-pinned-tools.sh
 RUN /usr/local/share/vibecode-essential/install-agent-tools.sh
 
-# Browser artifacts are shared and readable by dev, not installed in root's home.
+# Browsers live in the standard Playwright cache and the package in the global npm
+# prefix, so `playwright`, `chromium`, and `require('playwright')` all resolve
+# without NODE_PATH and without a version-pinned path baked into scripts.
 RUN set -eux; \
-    npm install --prefix /opt/playwright playwright@latest; \
-    ln -s /opt/playwright/node_modules/playwright/cli.js /usr/local/bin/playwright; \
+    npm install --global playwright@latest; \
     playwright install --with-deps chromium; \
-    chmod -R a+rX /opt/playwright /opt/playwright-browsers; \
+    chromium_path="$(node -p "require('playwright').chromium.executablePath()")"; \
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$chromium_path" > /usr/local/bin/chromium; \
+    chmod 0755 /usr/local/bin/chromium; \
+    chmod -R a+rX /usr/local/lib/node_modules/playwright /ms-playwright; \
     npm cache clean --force; \
     rm -rf /var/lib/apt/lists/*
 

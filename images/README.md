@@ -192,6 +192,7 @@ What it adds on top:
 | OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                     |
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`) |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                  |
+|                          | CI and telemetry CLIs: `wakatime-cli`, `circleci`                                  |
 | oasdiff 1.17.0           | every apt package, Docker included (Docker's apt repository)                       |
 
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
@@ -200,6 +201,14 @@ right-hand column deliberately tracks upstream, which is why the workflow has a
 schedule: the cron rebuild every four hours (UTC) republishes `:latest` with
 `pull` and `no-cache`, so "latest" actually re-resolves instead of replaying
 cached layers. A push under `images/` publishes the same refresh immediately.
+
+Chromium is installed by Playwright and is also on `PATH` as `chromium`, so a
+tool that shells out to a browser works without a version-pinned path.
+`playwright` resolves in the global npm prefix (`require('playwright')` works
+without `NODE_PATH`), and browsers live in the standard
+`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` cache.
+`circleci` and `wakatime-cli` report their version without any credentials;
+run `circleci auth login` to use them.
 
 The image carries its own check at
 `/usr/local/share/vibecode-essential-smoke.sh`: it asserts the pinned versions,

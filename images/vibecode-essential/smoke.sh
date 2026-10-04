@@ -10,17 +10,20 @@ gitleaks version | grep -Fx 8.30.1
 typos --version | grep -F 1.35.5
 oasdiff --version | grep -F 1.17.0
 
-for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode; do
+for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode wakatime-cli circleci chromium; do
   command -v "$tool"
 done
 test -s /etc/ssl/certs/ca-certificates.crt
-for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode; do
+for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode chromium; do
   "$tool" --version
 done
 docker compose version
 docker buildx version
 direnv version
 playwright --version
+wakatime-cli --version
+circleci version
+test -d "${PLAYWRIGHT_BROWSERS_PATH:?}" -a -d "${PLAYWRIGHT_BROWSERS_PATH}/chromium-"
 
 node <<'JS'
 const assert = require('node:assert/strict');
@@ -28,7 +31,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { chromium } = require('/opt/playwright/node_modules/playwright');
+const { chromium } = require('playwright');
 
 async function checkMcp(command) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'vibecode-mcp-'));

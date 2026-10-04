@@ -13,6 +13,7 @@ case "$(dpkg --print-architecture)" in
     cbm_arch=amd64     # codebase-memory-mcp
     ld_arch=x86_64     # lazydocker
     direnv_arch=amd64
+    ci_arch=amd64      # wakatime-cli, circleci
     ;;
   arm64)
     rust_arch=aarch64
@@ -21,6 +22,7 @@ case "$(dpkg --print-architecture)" in
     cbm_arch=arm64
     ld_arch=arm64
     direnv_arch=arm64
+    ci_arch=arm64      # wakatime-cli, circleci
     ;;
   *) echo 'Only linux/amd64 and linux/arm64 are supported' >&2; exit 1 ;;
 esac
@@ -83,6 +85,26 @@ install -m 0755 btop/btop/bin/btop /usr/local/bin/btop
 # checksums file.
 latest_asset direnv/direnv "direnv.linux-${direnv_arch}"
 install -m 0755 "direnv.linux-${direnv_arch}" /usr/local/bin/direnv
+
+# wakatime-cli — Go binary at the zip root, checksums in one release-wide file.
+waka_archive="wakatime-cli-linux-${ci_arch}.zip"
+latest_asset wakatime/wakatime-cli "$waka_archive"
+latest_asset wakatime/wakatime-cli checksums_sha256.txt
+verify_sum checksums_sha256.txt "$waka_archive"
+mkdir wakatime && unzip -q "$waka_archive" -d wakatime
+install -m 0755 "wakatime/wakatime-cli-linux-${ci_arch}" /usr/local/bin/wakatime-cli
+
+# circleci — the version is embedded in the archive name, so the tag comes from
+# the /releases/latest redirect rather than the API.
+cci_version="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/CircleCI-Public/circleci-cli/releases/latest)"
+cci_version="${cci_version##*/}"
+cci_version="${cci_version#v}"
+cci_archive="circleci-cli_${cci_version}_linux_${ci_arch}.tar.gz"
+curl -fsSLO "https://github.com/CircleCI-Public/circleci-cli/releases/download/v${cci_version}/${cci_archive}"
+curl -fsSLo cci-checksums.txt "https://github.com/CircleCI-Public/circleci-cli/releases/download/v${cci_version}/circleci-cli_${cci_version}_checksums.txt"
+verify_sum cci-checksums.txt "$cci_archive"
+tar -xzf "$cci_archive" circleci
+install -m 0755 circleci /usr/local/bin/circleci
 
 # codebase-memory-mcp (DeusData). Linux has a fully-static "-portable" build;
 # upstream's own install.sh prefers it, so we take the same asset but verify
@@ -423,6 +445,6 @@ npm cache clean --force
 
 # Fail the build loudly if anything landed wrong.
 for tool in omp codebase-memory-mcp codebase-memory-session-mcp rtk lazygitrs \
-            lazydocker btop direnv codex claude opencode; do
+            lazydocker btop direnv wakatime-cli circleci codex claude opencode; do
   command -v "$tool" >/dev/null
 done
