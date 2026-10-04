@@ -11,7 +11,8 @@ ARG TYPOS_VERSION=1.35.5
 ARG OASDIFF_VERSION=1.17.0
 
 USER root
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    NODE_PATH=/usr/local/lib/node_modules
 
 RUN set -eux; \
     apt-get update; \
@@ -32,13 +33,17 @@ COPY --chmod=0755 install-pinned-tools.sh install-agent-tools.sh /usr/local/shar
 RUN /usr/local/share/vibecode-essential/install-pinned-tools.sh
 RUN /usr/local/share/vibecode-essential/install-agent-tools.sh
 
-# Browsers live in the standard Playwright cache and the package in the global npm
-# prefix, so `playwright`, `chromium`, and `require('playwright')` all resolve
-# without NODE_PATH and without a version-pinned path baked into scripts.
+# Browsers live in the standard Playwright cache, and the package is installed in
+# the global npm prefix. Node does not search that prefix on its own, so both
+# resolution routes are provided: NODE_PATH for `require`, and a symlink at the
+# filesystem root, which is the one `node_modules` every module path includes —
+# that also makes `import 'playwright'` work from any directory, which NODE_PATH
+# alone does not cover.
 RUN set -eux; \
     npm install --global playwright@latest; \
     playwright install --with-deps chromium; \
-    chromium_path="$(node -p "require('playwright').chromium.executablePath()")"; \
+    ln -sfn /usr/local/lib/node_modules /node_modules; \
+    chromium_path="$(NODE_PATH=/usr/local/lib/node_modules node -p "require('playwright').chromium.executablePath()")"; \
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$chromium_path" > /usr/local/bin/chromium; \
     chmod 0755 /usr/local/bin/chromium; \
     chmod -R a+rX /usr/local/lib/node_modules/playwright /ms-playwright; \

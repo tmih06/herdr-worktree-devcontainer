@@ -24,6 +24,8 @@ playwright --version
 wakatime-cli --version
 circleci version
 test -d "${PLAYWRIGHT_BROWSERS_PATH:?}" -a -d "${PLAYWRIGHT_BROWSERS_PATH}/chromium-"
+node -e 'require.resolve("playwright"); require("playwright").chromium'
+node --input-type=module -e 'import("playwright").then(m => { if (!m.chromium) process.exit(1) })'
 
 node <<'JS'
 const assert = require('node:assert/strict');
