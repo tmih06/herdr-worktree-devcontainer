@@ -266,7 +266,9 @@ function provision(checkout, workspaceId = "", labelArg = "") {
     );
     detail("to skip that, name a prebuilt image in your devcontainer.json, or set WTDC_TEMPLATE");
     if (fs.existsSync(path.join(ROOT, "images", "manifest.json"))) {
-      detail("  base | node | python | rust  (see images/README.md)");
+      detail(
+        "  base | node | node-bun | node-bun-docker | vibecode-essential | python | rust  (see images/README.md)",
+      );
     }
   }
 

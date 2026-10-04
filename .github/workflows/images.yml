@@ -8,7 +8,11 @@ name: images
 # `docker run` and a provision is a few seconds instead of half a minute.
 #
 # Shape: base builds first on its own, because every other template is FROM it
-# and needs it published. The rest then build in parallel.
+# and needs it published. Templates FROM base then build in parallel, and
+# templates FROM one of those (vibecode-essential is FROM node-bun-docker)
+# build in a second pass — joining the first pass would let a child's FROM
+# resolve to whatever the parent's tag held before this run. The plan job reads
+# the tiers out of manifest.json and errors on a nesting depth CI cannot order.
 #
 # Platforms: linux/amd64 and linux/arm64. Without an explicit `platforms`, buildx builds
 # for the runner's own architecture and nothing else, and the single amd64 image is
@@ -38,6 +42,14 @@ on:
         description: "Tag to build (defaults to the manifest tag)"
         required: false
         type: string
+  schedule:
+    # Every four hours UTC. The unpinned tools (Bun, cloudflared, the agent
+    # CLIs, apt repository packages) resolve to "latest" only at build time and
+    # ubuntu:24.04 moves underneath base, so without a timer the published tags
+    # would freeze whatever was current at the last images/ commit. Scheduled
+    # legs pull the parent fresh and skip the layer cache so the rebuild
+    # actually re-resolves those versions instead of replaying cached layers.
+    - cron: "0 */4 * * *"
 
 concurrency:
   group: images-${{ github.ref }}
@@ -61,6 +73,7 @@ jobs:
     outputs:
       base: ${{ steps.plan.outputs.base }}
       derived: ${{ steps.plan.outputs.derived }}
+      nested: ${{ steps.plan.outputs.nested }}
     steps:
       - uses: actions/checkout@v4
       - id: plan
@@ -78,17 +91,39 @@ jobs:
           ' images/manifest.json)
 
           derived=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
-            .images | map(select(.base != null))
+            .images
+            | ([.[] | select(.base == null) | .name][0]) as $root
+            | map(select(.base == $root))
             | {include: map({name, dir,
                 ref: ($reg + "/" + $pre + "-" + .name + ":" + $tag),
                 base_ref: ($reg + "/" + $pre + "-" + .base + ":" + $tag)})}
           ' images/manifest.json)
 
+          # A template FROM a template is a third pass: it must wait for the
+          # build job to publish its parent, so plan gives it its own matrix.
+          # base_dir lets a PR build the parent locally — the parent is not
+          # pushed on pull_request. Exactly one level of nesting is supported.
+          nested=$(jq -c --arg reg "$registry" --arg pre "$prefix" --arg tag "$tag" '
+            . as $doc
+            | ([.images[] | select(.base == null) | .name][0]) as $root
+            | ([.images[] | select(.base == $root) | .name]) as $tier1
+            | .images | map(select(.base != null and .base != $root))
+            | map(. as $img | if ($tier1 | index($img.base)) == null
+                  then error("\($img.name): parent \"\($img.base)\" is not the root template or one level below it; CI supports one level of nesting")
+                  else $img end)
+            | {include: map(. as $img | {name, dir,
+                ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
+                base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
+                base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
+          ' images/manifest.json)
+
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "derived=$derived" >> "$GITHUB_OUTPUT"
+          echo "nested=$nested" >> "$GITHUB_OUTPUT"
 
-          echo "base:  $(jq -r .ref <<<"$base")"
+          echo "base:   $(jq -r .ref <<<"$base")"
           jq -r '.include[] | "derive: \(.ref)  (from \(.base_ref))"' <<<"$derived"
+          jq -r '.include[] | "nested: \(.ref)  (from \(.base_ref))"' <<<"$nested"
 
   build-base:
     name: build base
@@ -120,6 +155,11 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ fromJson(needs.plan.outputs.base).ref }}
           provenance: false
+          # Scheduled runs exist to refresh "latest" versions, so replaying
+          # cached layers would be a no-op: pull the upstream base fresh and
+          # skip the cache entirely.
+          pull: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
@@ -155,8 +195,75 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ matrix.ref }}
           provenance: false
+          # Same reason as build-base: a scheduled run that hit the cache would
+          # ship the versions that were latest the last time this layer ran.
+          pull: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # Templates FROM a derived template — vibecode-essential is FROM
+  # node-bun-docker. They wait for the build matrix so FROM resolves to the
+  # tag published this run, not whatever the tag held before it.
+  build-nested:
+    name: build ${{ matrix.name }}
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.nested) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # On a pull request nothing was pushed, so matrix.base_ref names the
+      # parent's previous publish — building against it would not test this
+      # PR's parent changes at all. Build the parent into the local daemon
+      # first, and point the child's FROM at that local tag. The container
+      # driver cannot see local images, so the child build uses the docker
+      # driver (native platform, build-only — arch coverage is verify-dind's
+      # job, which rebuilds both legs anyway). The parent still takes its own
+      # ARG default for BASE_IMAGE, the published base — the same base every
+      # other PR leg builds against.
+      - name: Build parent locally (pull requests only)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker buildx build --builder default \
+            --tag wtdc-parent:${{ matrix.name }} \
+            ${{ matrix.base_dir }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        if: github.event_name != 'pull_request'
+        with:
+          context: ${{ matrix.dir }}
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_ref }}
+          push: true
+          tags: ${{ matrix.ref }}
+          provenance: false
+          pull: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Build against local parent (pull requests only)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker buildx build --builder default \
+            --build-arg BASE_IMAGE=wtdc-parent:${{ matrix.name }} \
+            ${{ matrix.dir }}
 
   # Exercise DinD on native runners, including PRs, without publishing test images.
   verify-dind:
@@ -180,14 +287,25 @@ jobs:
           npm install --global @devcontainers/cli
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck images/node-bun-docker/docker-init.sh tests/dind-smoke.sh
+          shellcheck images/node-bun-docker/docker-init.sh tests/dind-smoke.sh images/vibecode-essential/*.sh
+      # Both DinD images build the whole chain locally: vibecode-essential is
+      # FROM node-bun-docker, which is FROM base. Plain docker build so each
+      # FROM resolves to the tag built on this runner.
       - name: Build images on the runner
         run: |
           docker build --tag wtdc-base:verify images/base
           docker build --build-arg BASE_IMAGE=wtdc-base:verify --tag wtdc-node-bun-docker:verify images/node-bun-docker
+          docker build --build-arg BASE_IMAGE=wtdc-node-bun-docker:verify --tag wtdc-vibecode-essential:verify images/vibecode-essential
+      # The image's own check of every pinned and unpinned tool. The inherited
+      # entrypoint would start dockerd, so run the script as the entrypoint;
+      # it needs client tools only.
+      - name: Verify vibecode-essential toolset
+        run: docker run --rm --entrypoint /usr/local/share/vibecode-essential-smoke.sh wtdc-vibecode-essential:verify
       - name: Verify bundled Docker-in-Docker
-        timeout-minutes: 10
-        run: bash tests/dind-smoke.sh wtdc-node-bun-docker:verify
+        timeout-minutes: 15
+        run: |
+          bash tests/dind-smoke.sh wtdc-node-bun-docker:verify
+          bash tests/dind-smoke.sh wtdc-vibecode-essential:verify
 
   # Runs each template on each architecture, natively. Verifying on the amd64 runner alone
   # would only ever test the amd64 half: `docker run <tag>` picks the image matching the
@@ -196,8 +314,13 @@ jobs:
   # it is expensive.
   verify:
     name: verify ${{ matrix.platform }}
-    needs: [plan, build-base, build]
-    if: github.event_name != 'pull_request'
+    needs: [plan, build-base, build, build-nested]
+    # The skipped arm is for the day the manifest has no nested templates: an
+    # empty matrix marks build-nested skipped, and without naming that result
+    # acceptable, needs would skip this job and publish unverified.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (needs.build-nested.result == 'success' || needs.build-nested.result == 'skipped')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -271,6 +394,15 @@ jobs:
               fi
               if ! docker run --rm --platform "$platform" --entrypoint docker "$ref" compose version; then
                 echo "::error::$ref cannot run docker compose on $platform"
+                fail=1
+              fi
+            fi
+            if [ "$name" = vibecode-essential ]; then
+              # The image's own check of every pinned and unpinned tool, run as
+              # dev on this architecture. --entrypoint replaces the inherited
+              # DinD init, which this check does not need.
+              if ! docker run --rm --platform "$platform" --entrypoint /usr/local/share/vibecode-essential-smoke.sh "$ref"; then
+                echo "::error::$ref failed its bundled toolset smoke check on $platform"
                 fail=1
               fi
             fi

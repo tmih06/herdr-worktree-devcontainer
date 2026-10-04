@@ -58,6 +58,9 @@ export WTDC_TEMPLATE=node-bun
 # Node 24, latest Bun at build time, Docker-in-Docker, Compose, Make, direnv, cloudflared
 export WTDC_TEMPLATE=node-bun-docker
 
+# All of that, plus pinned dev tools and the coding-agent CLIs
+export WTDC_TEMPLATE=vibecode-essential
+
 # or straight at an image
 export WTDC_IMAGE=ghcr.io/tmih06/herdr-devcontainer-base:latest
 ```
@@ -69,8 +72,9 @@ WTDC_TEMPLATE=node
 WTDC_IMAGE_REMOTE_USER=dev
 ```
 
-The plugin pulls the image once if it is not local, so the first provision of a
-template pays the pull and every one after that does not.
+The plugin pulls missing images and confirmed published updates before setup.
+Current local images are reused; existing containers need a rebuild to use an
+updated image.
 
 `node-bun-docker` includes Docker Engine, its client, Compose, Buildx, and
 `cloudflared` for Cloudflare Tunnel.
@@ -144,6 +148,8 @@ table is what each one _adds_ — pick a row and you also get the first.
 
 ← means inherited from `base`, not absent. ✓ means added by that image. The
 `node-bun` and `node-bun-docker` sizes are pending a published measurement.
+`vibecode-essential` is not a column: it inherits the whole `node-bun-docker`
+column, and its additions are in its own section below.
 
 Not in any of them, deliberately: **no compiler in `base`**, no language runtimes, no
 editors, and no editor at all. `build-essential` alone was ~250MB, which was most of why
@@ -164,6 +170,40 @@ refuses to remap a uid that another user already holds, and `ubuntu:24.04` ships
 remap a genuine no-op on a uid-1000 host and still correct elsewhere. The image carries
 `devcontainer.remote.uid` and `devcontainer.remote.user` labels so the plugin can skip
 building a useless `-uid` copy of the image.
+
+## `vibecode-essential`
+
+`vibecode-essential` is `FROM node-bun-docker`, so everything in that row —
+the DinD daemon, its entrypoint, volumes, and `devcontainer.metadata` — is
+inherited unchanged and carries the same requirements: run privileged, with an
+init process, and with dedicated volumes for `/var/lib/docker` and
+`/var/lib/containerd`. The devcontainer config and `docker run` examples above
+apply verbatim; swap the tag for
+`ghcr.io/tmih06/herdr-devcontainer-vibecode-essential:latest`.
+
+What it adds on top:
+
+| pinned                   | latest at build time                                                               |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| Node.js 24.18.0          | `gh` (GitHub's apt repository)                                                     |
+| Bun 1.4.2                | `playwright` + bundled Chromium (`playwright@latest`)                              |
+| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                     |
+| Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`) |
+| typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                  |
+| oasdiff 1.17.0           | every apt package, Docker included (Docker's apt repository)                       |
+
+Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
+and download with checksum verification; bump the ARG to bump the pin. The
+right-hand column deliberately tracks upstream, which is why the workflow has a
+schedule: the cron rebuild every four hours (UTC) republishes `:latest` with
+`pull` and `no-cache`, so "latest" actually re-resolves instead of replaying
+cached layers. A push under `images/` publishes the same refresh immediately.
+
+The image carries its own check at
+`/usr/local/share/vibecode-essential-smoke.sh`: it asserts the pinned versions,
+every tool on `PATH`, the MCP servers' `tools/list`, and a real Chromium
+launch. `verify` runs it on both architectures after a push; `verify-dind`
+runs it on PR builds before `dind-smoke.sh`.
 
 ## Adding a template
 
@@ -188,7 +228,12 @@ building a useless `-uid` copy of the image.
 { "name": "go", "dir": "images/go", "base": "base", "description": "base plus Go" }
 ```
 
-`base` is the only entry without a `base` field, and CI builds it first.
+`base` names the template your `Dockerfile` is `FROM` — `base` itself is the
+only entry without one, and CI builds it first. A template can also build on a
+derived template (`vibecode-essential` has `"base": "node-bun-docker"`): CI
+builds it in a second pass, after the parent's tag has been published. One
+level of that nesting is supported; `plan` fails the manifest on a deeper
+chain.
 
 3. Push. The workflow builds everything on `main` and pushes to GHCR.
 
@@ -198,20 +243,33 @@ building a useless `-uid` copy of the image.
 
 - **plan** — reads `manifest.json` and emits the build matrix. A broken manifest
   fails in seconds rather than after a base image has been through a full build.
-- **build-base** and **build** — `base` builds first and publishes on its own,
-  because every other template is `FROM` it. **build** is then a matrix over
-  the derived templates in parallel, each pulling `base` first. GHA layer cache
-  is keyed per template, so a change to one does not invalidate the others.
+- **build-base**, **build**, and **build-nested** — `base` builds first and
+  publishes on its own, because every other template is `FROM` it. **build** is
+  a matrix over the templates `FROM base`, in parallel; **build-nested** waits
+  for it, so a template `FROM` a derived template resolves the tag published
+  this run rather than racing the previous one. GHA layer cache is keyed per
+  template, so a change to one does not invalidate the others.
 - **verify** — after a successful push, runs `herdr --version` inside every
-  published image, so a broken tag fails the workflow instead of failing
-  someone's first provision.
-- **verify-dind** — builds the base and `node-bun-docker` on native amd64 and
-  arm64 runners, including on pull requests. Checks daemon startup, nested
-  builds and containers, Compose, restart, and a minimal Dev Container config
-  that relies on the image metadata.
+  published image on native amd64 and arm64 runners, so a broken tag fails the
+  workflow instead of failing someone's first provision. It also runs
+  `vibecode-essential`'s bundled smoke script, which asserts every pinned
+  version and tools the matrix alone cannot tell apart.
+- **verify-dind** — on every trigger including pull requests, builds `base`,
+  `node-bun-docker`, and `vibecode-essential` locally on native amd64 and arm64
+  runners. Runs `dind-smoke.sh` against both DinD images: daemon startup,
+  nested builds and containers, Compose, restart, and a minimal Dev Container
+  config that relies on the image metadata.
+
+The workflow also runs on a schedule, `0 */4 * * *` — every four hours UTC.
+Scheduled legs build with `pull` and `no-cache` so the published images pick up
+new upstream releases of everything installed unpinned (apt packages, Bun,
+cloudflared, the agent CLIs) and any movement in `ubuntu:24.04` under `base`.
 
 Tags are `ghcr.io/tmih06/herdr-devcontainer-<name>:latest` by default; override
-with the `workflow_dispatch` `tag` input. Pull requests build but do not push.
+with the `workflow_dispatch` `tag` input. Pull requests build but do not push —
+for a nested template, the parent is built locally first and the child's
+`FROM` is pointed at that local tag, since the parent's new image exists
+nowhere else yet.
 
 ## Building locally
 
