@@ -7,8 +7,9 @@ start_daemon() {
     return
   fi
 
-  # A stopped container can leave PID files behind when it is restarted.
-  rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
+  # Docker's managed containerd keeps its PID under Docker's exec root,
+  # not the system containerd directory. Old PIDs can be reused after restart.
+  rm -f /var/run/docker.pid /var/run/docker/containerd/containerd.pid
   nohup dockerd --host=unix:///var/run/docker.sock > /var/log/dockerd.log 2>&1 &
   local daemon_pid=$!
 

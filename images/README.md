@@ -106,6 +106,8 @@ docker run --rm -it --privileged --init \
 
 Startup waits for the daemon to become ready and reports failures with its
 log, also available at `/var/log/dockerd.log`.
+Restarts clear stale Docker-managed containerd PID files without removing
+the persistent Docker or containerd storage.
 Interactive Bash shells load direnv; run `direnv allow` in a project to approve
 its `.envrc`.
 `bun@latest` is resolved when GitHub Actions builds the image; rebuild it to

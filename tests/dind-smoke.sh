@@ -72,6 +72,15 @@ docker restart "$raw_container" >/dev/null
 wait_for_docker "$raw_container"
 test "$(docker exec "$raw_container" docker run --rm wtdc-dind-smoke:local)" = nested-docker-works
 
+# An unclean stop can leave containerd's PID file pointing at a reused PID.
+# PID 1 is always live after startup, making this restart regression deterministic.
+docker stop --time 0 "$raw_container" >/dev/null
+printf '1\n' > "$workspace/stale-containerd.pid"
+docker cp "$workspace/stale-containerd.pid" "$raw_container:/var/run/docker/containerd/containerd.pid"
+docker start "$raw_container" >/dev/null
+wait_for_docker "$raw_container"
+test "$(docker exec "$raw_container" docker run --rm wtdc-dind-smoke:local)" = nested-docker-works
+
 # No features or explicit runtime flags: startup and privileges come from metadata.
 mkdir -p "$workspace/.devcontainer"
 jq -n --arg image "$image" '{image: $image, remoteUser: "dev", updateRemoteUserUID: false}' \
