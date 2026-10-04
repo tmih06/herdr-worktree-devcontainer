@@ -43,13 +43,13 @@ on:
         required: false
         type: string
   schedule:
-    # Every four hours UTC. The unpinned tools (Bun, cloudflared, the agent
-    # CLIs, apt repository packages) resolve to "latest" only at build time and
+    # Daily, 00:00 UTC. The unpinned tools (Bun, cloudflared, the agent CLIs,
+    # apt repository packages) resolve to "latest" only at build time and
     # ubuntu:24.04 moves underneath base, so without a timer the published tags
     # would freeze whatever was current at the last images/ commit. Scheduled
     # legs pull the parent fresh and skip the layer cache so the rebuild
     # actually re-resolves those versions instead of replaying cached layers.
-    - cron: "0 */4 * * *"
+    - cron: "0 0 * * *"
 
 concurrency:
   group: images-${{ github.ref }}

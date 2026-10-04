@@ -198,9 +198,12 @@ What it adds on top:
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
 and download with checksum verification; bump the ARG to bump the pin. The
 right-hand column deliberately tracks upstream, which is why the workflow has a
-schedule: the cron rebuild every four hours (UTC) republishes `:latest` with
-`pull` and `no-cache`, so "latest" actually re-resolves instead of replaying
-cached layers. A push under `images/` publishes the same refresh immediately.
+
+Rebuilds run **daily at 00:00 UTC** on the `images` workflow's schedule — the
+cron is `0 0 * * *`. Scheduled legs use `pull` and `no-cache`, so each run
+republishes `:latest` by re-resolving every unpinned tool against upstream
+rather than replaying the layer cache. A push under `images/` publishes the
+same refresh immediately.
 
 Chromium is installed by Playwright and is also on `PATH` as `chromium`, so a
 tool that shells out to a browser works without a version-pinned path.
