@@ -48,7 +48,12 @@ server.listen(0, "127.0.0.1", () => {
   );
   const portFile = path.join(dir, "port");
   const child = spawn(process.execPath, [path.join(dir, "registry.mjs")], {
-    env: {...process.env, IMAGE_TEST_MODE: mode, IMAGE_TEST_DIGEST: digest, IMAGE_TEST_PORT_FILE: portFile},
+    env: {
+      ...process.env,
+      IMAGE_TEST_MODE: mode,
+      IMAGE_TEST_DIGEST: digest,
+      IMAGE_TEST_PORT_FILE: portFile,
+    },
     stdio: "ignore",
   });
   t.after(() => child.kill());
@@ -74,7 +79,7 @@ function imageFixture(t, mode) {
   fs.mkdirSync(path.join(checkout, ".devcontainer"), { recursive: true });
   fs.writeFileSync(
     path.join(checkout, ".devcontainer", "devcontainer.json"),
-    JSON.stringify({image: ref}),
+    JSON.stringify({ image: ref }),
   );
   fs.writeFileSync(
     path.join(dir, "docker"),
@@ -174,11 +179,11 @@ else console.log("{}");
       return fs.existsSync(env.IMAGE_TEST_PULLED);
     },
     describe: () => {
-      const result = spawnSync(
-        process.execPath,
-        [path.join(ROOT, "lib/wtdc/imageInfo.mjs"), ref],
-        { env, encoding: "utf8", timeout: 5000 },
-      );
+      const result = spawnSync(process.execPath, [path.join(ROOT, "lib/wtdc/imageInfo.mjs"), ref], {
+        env,
+        encoding: "utf8",
+        timeout: 5000,
+      });
       assert.equal(result.status, 0, result.stderr);
       return JSON.parse(result.stdout);
     },

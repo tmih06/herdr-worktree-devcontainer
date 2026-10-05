@@ -451,7 +451,10 @@ test("compareImage: an index-vs-manifest match is current, a mismatch is not evi
     "unknown",
   );
   assert.equal(
-    compareImage({ digest: "sha256:a", configDigest: "" }, { manifestDigest: "sha256:b", configDigest: "" }),
+    compareImage(
+      { digest: "sha256:a", configDigest: "" },
+      { manifestDigest: "sha256:b", configDigest: "" },
+    ),
     "unknown",
   );
 });
