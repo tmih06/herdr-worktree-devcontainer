@@ -27,10 +27,8 @@ unzip -q "$yazi_archive" -d yazi-dir
 yazi_bin="$(find yazi-dir -name yazi -type f | head -1)"
 install -m 0755 "$yazi_bin" /usr/local/bin/yazi
 # ya is yazi's CLI companion (opens tabs/cwd in the running instance) if shipped.
-ya_bin="$(find yazi-dir -name ya -type f | head -1)"
-[ -n "$ya_bin" ] && install -m 0755 "$ya_bin" /usr/local/bin/ya || true
-
-# lazygit — LazyVim wires <leader>gg to the `lazygit` command; the Go original,
+ya_bin="$(find yazi-dir -name ya -type f | head -1 || true)"
+if [ -n "$ya_bin" ]; then install -m 0755 "$ya_bin" /usr/local/bin/ya; fi
 # not lazygitrs.
 lg_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/jesseduffield/lazygit/releases/latest)"
 lg_tag="${lg_tag##*/}"
