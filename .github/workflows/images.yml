@@ -119,7 +119,8 @@ jobs:
                   ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
                   base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
                   base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
-              end}
+              end
+          ' images/manifest.json)
 
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "derived=$derived" >> "$GITHUB_OUTPUT"
