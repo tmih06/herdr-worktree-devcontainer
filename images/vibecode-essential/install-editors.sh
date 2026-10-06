@@ -35,7 +35,13 @@ asset_sha() { # repo tag asset -> sha256, from the release page's embedded
   printf '%s' "$sha"
 }
 
-# yazi — terminal file manager. Release zip ships the binary in an arch dir.
+# yazi — terminal file manager. Its documented dependencies give it mime
+# sniffing (file), thumbnails (ffmpegthumbnailer, poppler, imagemagick),
+# archive listing (p7zip, unar), and content search (ripgrep, fzf, zoxide);
+# fd and jq are already installed. Release zip ships the binary in an arch dir.
+apt-get update
+apt-get install -y --no-install-recommends \
+  file p7zip-full unar ffmpegthumbnailer poppler-utils imagemagick ripgrep fzf zoxide
 yazi_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/sxyazi/yazi/releases/latest)"
 yazi_tag="${yazi_tag##*/}"
 yazi_archive="yazi-${yazi_arch}-unknown-linux-gnu.zip"
