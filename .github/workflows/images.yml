@@ -315,13 +315,12 @@ jobs:
   # it is expensive.
   verify:
     name: verify ${{ matrix.platform }}
-    needs: [plan, build-base, build, build-nested]
-    # needs-skip beats the if below: with no nested templates in the manifest,
-    # build-nested's matrix is empty and it reports skipped, which skips this
-    # job outright unless always() forces evaluation. failure()/cancelled()
-    # then gate on the real signal — a skipped upstream is not a failure.
-    # This runs on PRs too: it verifies the published :latest images, not the
-    # PR build.
+    # build-nested is deliberately not a need: an empty nested matrix reports
+    # build-nested skipped, and needs-skip overrides any if (even always()),
+    # skipping this job — which check-suite aggregation records as a failure.
+    # Limitation: if nested templates return, nested refs race their builds
+    # here; per-arch nested verification belongs in build-nested's own legs.
+    needs: [plan, build-base, build]
     if: always() && !failure() && !cancelled()
     runs-on: ${{ matrix.runner }}
     strategy:
