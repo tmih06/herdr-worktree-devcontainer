@@ -42,6 +42,10 @@ asset_sha() { # repo tag asset -> sha256, from the release page's embedded
 apt-get update
 apt-get install -y --no-install-recommends \
   file p7zip-full unar ffmpegthumbnailer poppler-utils imagemagick ripgrep fzf zoxide
+# apt only marks newly-installed packages manual; anything already pulled in
+# as a dependency stays auto and the autoremove at the end of this script
+# purges it right back out (seen in the DinD leg: `file` vanished).
+apt-mark manual file p7zip-full unar ffmpegthumbnailer poppler-utils imagemagick ripgrep fzf zoxide
 yazi_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/sxyazi/yazi/releases/latest)"
 yazi_tag="${yazi_tag##*/}"
 yazi_archive="yazi-${yazi_arch}-unknown-linux-gnu.zip"
