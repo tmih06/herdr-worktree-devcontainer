@@ -49,7 +49,7 @@ if [ -n "$ya_bin" ]; then install -m 0755 "$ya_bin" /usr/local/bin/ya; fi
 # not lazygitrs.
 lg_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/jesseduffield/lazygit/releases/latest)"
 lg_tag="${lg_tag##*/}"
-lg_archive="lazygit_${lg_tag#v}_Linux_${lazygit_arch}.tar.gz"
+lg_archive="lazygit_${lg_tag#v}_linux_${lazygit_arch}.tar.gz"
 curl -fsSLO "https://github.com/jesseduffield/lazygit/releases/download/${lg_tag}/${lg_archive}"
 curl -fsSLo lg-checksums.txt "https://github.com/jesseduffield/lazygit/releases/download/${lg_tag}/checksums.txt"
 grep " ${lg_archive}$" lg-checksums.txt | sha256sum --check -
