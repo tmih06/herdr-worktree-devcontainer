@@ -10,7 +10,7 @@ gitleaks version | grep -Fx 8.30.1
 typos --version | grep -F 1.35.5
 oasdiff --version | grep -F 1.17.0
 
-for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode wakatime-cli circleci chromium wrangler yazi lazygit nvim vim vi fd; do
+for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode wakatime-cli circleci chromium wrangler yazi lazygit nvim vim vi fd file 7z unar lsar ffmpegthumbnailer pdfinfo convert identify rg fzf zoxide; do
   command -v "$tool"
 done
 test -s /etc/ssl/certs/ca-certificates.crt
