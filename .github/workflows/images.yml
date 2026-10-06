@@ -111,11 +111,15 @@ jobs:
             | map(. as $img | if ($tier1 | index($img.base)) == null
                   then error("\($img.name): parent \"\($img.base)\" is not the root template or one level below it; CI supports one level of nesting")
                   else $img end)
-            | {include: map(. as $img | {name, dir,
-                ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
-                base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
-                base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
-          ' images/manifest.json)
+            # An empty matrix skips build-nested outright, and this Actions
+            # version counts skipped check-runs as a suite failure. Emit a
+            # real entry that no-ops instead; name == "skip" gates the steps.
+            | if length == 0 then {include: [{name: "skip", dir: ".", ref: "", base_ref: "", base_dir: ""}]}
+              else {include: map(. as $img | {name, dir,
+                  ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
+                  base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
+                  base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
+              end}
 
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "derived=$derived" >> "$GITHUB_OUTPUT"
@@ -217,12 +221,15 @@ jobs:
       matrix: ${{ fromJson(needs.plan.outputs.nested) }}
     steps:
       - uses: actions/checkout@v4
+        if: matrix.name != 'skip'
       - uses: docker/setup-qemu-action@v3
-        if: github.event_name != 'pull_request'
+        if: matrix.name != 'skip' && github.event_name != 'pull_request'
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@v3
+        if: matrix.name != 'skip'
       - name: Log in to GHCR
+        if: matrix.name != 'skip'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -238,14 +245,14 @@ jobs:
       # ARG default for BASE_IMAGE, the published base — the same base every
       # other PR leg builds against.
       - name: Build parent locally (pull requests only)
-        if: github.event_name == 'pull_request'
+        if: matrix.name != 'skip' && github.event_name == 'pull_request'
         run: |
           docker buildx build --builder default \
             --tag wtdc-parent:${{ matrix.name }} \
             ${{ matrix.base_dir }}
       - name: Build and push
         uses: docker/build-push-action@v6
-        if: github.event_name != 'pull_request'
+        if: matrix.name != 'skip' && github.event_name != 'pull_request'
         with:
           context: ${{ matrix.dir }}
           platforms: ${{ env.PLATFORMS }}
@@ -259,7 +266,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Build against local parent (pull requests only)
-        if: github.event_name == 'pull_request'
+        if: matrix.name != 'skip' && github.event_name == 'pull_request'
         run: |
           docker buildx build --builder default \
             --build-arg BASE_IMAGE=wtdc-parent:${{ matrix.name }} \
