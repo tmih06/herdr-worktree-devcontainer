@@ -318,10 +318,11 @@ jobs:
     needs: [plan, build-base, build, build-nested]
     # The skipped arm is for the day the manifest has no nested templates: an
     # empty matrix marks build-nested skipped, and without naming that result
-    # acceptable, needs would skip this job and publish unverified.
+    # acceptable, needs would skip this job and publish unverified. This runs on
+    # PRs too: it verifies the published :latest images, not the PR build, and a
+    # skipped matrix job here reports the whole check-suite as failed.
     if: >-
-      github.event_name != 'pull_request' &&
-      (needs.build-nested.result == 'success' || needs.build-nested.result == 'skipped')
+      needs.build-nested.result == 'success' || needs.build-nested.result == 'skipped'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
