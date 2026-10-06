@@ -74,7 +74,7 @@ ln -f /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
 ln -f /usr/local/lib/node_modules/wrangler/node_modules/workerd/bin/workerd \
       /usr/local/lib/node_modules/wrangler/node_modules/@cloudflare/workerd-linux-*/bin/workerd 2>/dev/null || true
 
-apt-get purge -y upx-ucl file
+apt-get purge -y upx-ucl  # file stays: yazi needs it for mime sniffing
 apt-get autoremove -y --purge
 rm -rf /var/lib/apt/lists/*
 
