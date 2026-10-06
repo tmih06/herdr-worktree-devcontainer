@@ -39,9 +39,17 @@ install_release opentofu/opentofu "v${TOFU_VERSION}" "tofu_${TOFU_VERSION}_linux
 install_release gitleaks/gitleaks "v${GITLEAKS_VERSION}" "gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" gitleaks
 install_release oasdiff/oasdiff "v${OASDIFF_VERSION}" "oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz" checksums.txt oasdiff
 
-# typos publishes self-contained musl binaries, including aarch64.
+# typos publishes self-contained musl binaries, including aarch64. The digest
+# comes from GitHub's asset metadata — which rate-limits shared runner IPs —
+# so retry before trusting it, and never feed an empty digest to sha256sum.
 typos_asset="typos-v${TYPOS_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz"
-typos_sha="$(curl -fsSL "https://api.github.com/repos/crate-ci/typos/releases/tags/v${TYPOS_VERSION}" | jq -er --arg asset "$typos_asset" '.assets[] | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")')"
+typos_sha=""
+for _ in 1 2 3; do
+  typos_sha="$(curl -fsSL "https://api.github.com/repos/crate-ci/typos/releases/tags/v${TYPOS_VERSION}" | jq -r --arg asset "$typos_asset" '.assets[]? | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")' 2>/dev/null || true)"
+  [ -n "$typos_sha" ] && break
+  sleep 5
+done
+[ -n "$typos_sha" ] || { echo "ERROR: no sha256 digest for ${typos_asset} (API rate limit?)" >&2; exit 1; }
 curl -fsSLo typos.tar.gz "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/${typos_asset}"
 printf '%s  typos.tar.gz\n' "$typos_sha" | sha256sum --check -
 mkdir typos

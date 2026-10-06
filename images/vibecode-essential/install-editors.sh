@@ -13,8 +13,21 @@ trap 'rm -rf "$work"' EXIT
 cd "$work"
 
 asset_sha() { # repo tag asset -> sha256 from GitHub's own digest metadata
-  curl -fsSL "https://api.github.com/repos/$1/releases/tags/$2" \
-    | jq -er --arg asset "$3" '.assets[] | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")'
+  # api.github.com rate-limits shared runner IPs; retry, then fail loudly —
+  # an empty digest must never reach sha256sum as a malformed line.
+  local sha=""
+  for _ in 1 2 3; do
+    sha="$(curl -fsSL "https://api.github.com/repos/$1/releases/tags/$2" \
+      | jq -r --arg asset "$3" '.assets[]? | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")' \
+      2>/dev/null || true)"
+    [ -n "$sha" ] && break
+    sleep 5
+  done
+  if [ -z "$sha" ]; then
+    echo "ERROR: no sha256 digest for $1@$2/$3 (API rate limit?)" >&2
+    return 1
+  fi
+  printf '%s' "$sha"
 }
 
 # yazi — terminal file manager. Release zip ships the binary in an arch dir.
