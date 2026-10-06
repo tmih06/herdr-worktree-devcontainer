@@ -192,7 +192,7 @@ What it adds on top:
 | OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                     |
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`) |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                  |
-|                          | CI and telemetry CLIs: `wakatime-cli`, `circleci`                                  |
+|                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`            |
 | oasdiff 1.17.0           | every apt package, Docker included (Docker's apt repository)                       |
 
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
