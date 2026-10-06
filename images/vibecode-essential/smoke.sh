@@ -35,8 +35,8 @@ test -f "$HOME/.local/share/blesh/ble.sh"
 test -f "$HOME/.config/oh-my-bash/compact-agnoster.sh"
 test -f "$HOME/.config/oh-my-bash/git-aliases.sh"
 grep -q 'omp-shell' "$HOME/.bashrc"
-bash -ic 'type gs gc ga gco gp gpl' 2>/dev/null | grep -c 'alias'
-bash -ic 'type gs' 2>/dev/null | grep -q "alias gs='git status'"
+test "$(bash -ic 'type gs gc ga gco gp gpl' 2>/dev/null | grep -c 'is aliased to')" -eq 6
+bash -ic 'type gs' 2>/dev/null | grep -q "aliased to .git status."
 ls -d "${PLAYWRIGHT_BROWSERS_PATH:?}"/chromium_headless_shell-* >/dev/null
 node -e 'require.resolve("playwright"); require("playwright").chromium'
 node --input-type=module -e 'import("playwright").then(m => { if (!m.chromium) process.exit(1) })'
