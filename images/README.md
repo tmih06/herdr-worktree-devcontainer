@@ -188,15 +188,15 @@ privileged, with an init process, and with dedicated volumes for
 
 What it adds on top:
 
-| pinned                   | latest at build time                                                                                                                                                                                                    |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Node.js 24.18.0          | `gh` (GitHub's apt repository)                                                                                                                                                                                          |
-| Bun 1.4.2                | `playwright` + bundled Chromium (`playwright@latest`)                                                                                                                                                                   |
-| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                                                                                                                                                          |
-| Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`)                                                                                                                                      |
-| typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                                                                                                                                                       |
-|                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`                                                                                                                                                 |
-|                          | editors: `yazi` + preview/search deps (`file`, `7z`, `unar`, `ffmpegthumbnailer`, `poppler-utils`, ImageMagick, `ripgrep`, `fzf`, `zoxide`), `nvim` + LazyVim (plugins synced at build); `lazygit` links to `lazygitrs` |
+| pinned                   | latest at build time                                                                                                                                                                               |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node.js 24.18.0          | `gh` (GitHub's apt repository)                                                                                                                                                                     |
+| Bun 1.4.2                | `playwright` + bundled Chromium (`playwright@latest`)                                                                                                                                              |
+| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                                                                                                                                     |
+| Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`)                                                                                                                 |
+| typos 1.35.5             | terminal tools: `lazydocker`, `btop`                                                                                                                                                               |
+|                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`                                                                                                                            |
+|                          | editors: `yazi` + preview/search deps (`file`, `7z`, `unar`, `ffmpegthumbnailer`, `poppler-utils`, ImageMagick, `ripgrep`, `fzf`, `zoxide`), `lazygit`, `nvim` + LazyVim (plugins synced at build) |
 
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
 and download with checksum verification; bump the ARG to bump the pin. The

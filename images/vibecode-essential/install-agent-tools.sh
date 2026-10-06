@@ -7,7 +7,7 @@ set -euo pipefail
 # Asset spellings per upstream, keyed on the dpkg architecture.
 case "$(dpkg --print-architecture)" in
   amd64)
-    rust_arch=x86_64   # rtk, lazygitrs, btop
+    rust_arch=x86_64   # rtk, btop
     rtk_libc=musl      # rtk's x86_64 linux build is musl; its arm64 build is gnu
     omp_arch=x64       # oh-my-pi release binaries
     cbm_arch=amd64     # codebase-memory-mcp
@@ -56,14 +56,6 @@ latest_asset rtk-ai/rtk checksums.txt
 verify_sum checksums.txt "$rtk_archive"
 mkdir rtk && tar -xzf "$rtk_archive" -C rtk
 install -m 0755 rtk/rtk /usr/local/bin/rtk
-
-# lazygitrs — Rust lazygit rewrite (Blankeos/lazygitrs), crates.io name matches.
-lg_archive="lazygitrs-${rust_arch}-unknown-linux-gnu.tar.xz"
-latest_asset Blankeos/lazygitrs "$lg_archive"
-latest_asset Blankeos/lazygitrs "${lg_archive}.sha256"
-sha256sum --check "${lg_archive}.sha256"
-tar -xJf "$lg_archive"
-install -m 0755 "lazygitrs-${rust_arch}-unknown-linux-gnu/lazygitrs" /usr/local/bin/lazygitrs
 
 # lazydocker (jesseduffield/lazydocker). Asset names embed the version, so the
 # tag is resolved from the /releases/latest redirect instead of the API.
@@ -445,7 +437,7 @@ npm install --global \
 npm cache clean --force
 
 # Fail the build loudly if anything landed wrong.
-for tool in omp codebase-memory-mcp codebase-memory-session-mcp rtk lazygitrs \
+for tool in omp codebase-memory-mcp codebase-memory-session-mcp rtk \
             lazydocker btop direnv wakatime-cli circleci codex claude opencode wrangler; do
   command -v "$tool" >/dev/null
 done

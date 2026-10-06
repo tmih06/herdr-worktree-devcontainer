@@ -37,7 +37,6 @@ pack /usr/local/bin/oasdiff --version
 pack /usr/local/bin/codebase-memory-mcp --version
 pack /usr/local/bin/omp --version
 pack /usr/local/bin/rtk --version
-pack /usr/local/bin/lazygitrs --version
 pack /usr/local/bin/lazydocker --version
 pack /usr/local/bin/btop --version
 pack /usr/local/bin/direnv version

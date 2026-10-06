@@ -19,7 +19,6 @@
   // Use localEnv for host paths; Docker does not expand a literal ~ in a source.
   "mounts": [
     // "type=bind,source=/usr/bin/btop,target=/usr/local/bin/btop,readonly"
-    "type=bind,source=${localEnv:HOME}/.local/bin/lazygitrs,target=/usr/local/bin/lazygit,readonly",
     "type=bind,source=${localEnv:HOME}/.codex/packages/standalone/current,target=/opt/codex,readonly",
     "type=bind,source=${localEnv:HOME}/.codex/auth.json,target=/home/dev/.codex/auth.json,readonly"
   ],

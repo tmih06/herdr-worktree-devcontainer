@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Editors: yazi, neovim + LazyVim; lazygit links to lazygitrs (agent tools).
+# Editors: yazi, lazygit, neovim + LazyVim.
 # All resolve latest upstream at build time. Runs as root during docker build;
 # nvim config lands in dev's home.
 set -euo pipefail
 
 case "$(dpkg --print-architecture)" in
-  amd64) yazi_arch=x86_64; nvim_arch=x86_64 ;;
-  arm64) yazi_arch=aarch64; nvim_arch=arm64 ;;
+  amd64) yazi_arch=x86_64; lazygit_arch=x86_64; nvim_arch=x86_64 ;;
+  arm64) yazi_arch=aarch64; lazygit_arch=arm64; nvim_arch=arm64 ;;
   *) echo 'Only linux/amd64 and linux/arm64 are supported' >&2; exit 1 ;;
 esac
 work="$(mktemp -d)"
@@ -53,10 +53,17 @@ install -m 0755 "$yazi_bin" /usr/local/bin/yazi
 # ya is yazi's CLI companion (opens tabs/cwd in the running instance) if shipped.
 ya_bin="$(find yazi-dir -name ya -type f | head -1 || true)"
 if [ -n "$ya_bin" ]; then install -m 0755 "$ya_bin" /usr/local/bin/ya; fi
-# lazygitrs (installed by install-agent-tools.sh) is a drop-in lazygit; link it
-# under the name LazyVim's <leader>gg integration shells out to rather than
-# shipping a second git UI.
-ln -sf /usr/local/bin/lazygitrs /usr/local/bin/lazygit
+# lazygit — the Go original LazyVim's <leader>gg integration shells out to.
+# Assets were renamed to lowercase linux_<arch> in v0.66.0; checksums.txt
+# ships alongside each release.
+lg_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/jesseduffield/lazygit/releases/latest)"
+lg_tag="${lg_tag##*/}"
+lg_archive="lazygit_${lg_tag#v}_linux_${lazygit_arch}.tar.gz"
+curl -fsSLO "https://github.com/jesseduffield/lazygit/releases/download/${lg_tag}/${lg_archive}"
+curl -fsSLo lg-checksums.txt "https://github.com/jesseduffield/lazygit/releases/download/${lg_tag}/checksums.txt"
+grep " ${lg_archive}$" lg-checksums.txt | sha256sum --check -
+mkdir lazygit && tar -xzf "$lg_archive" -C lazygit
+install -m 0755 lazygit/lazygit /usr/local/bin/lazygit
 
 # neovim — Ubuntu 24.04 ships 0.9.x, too old for LazyVim (needs >= 0.11).
 nvim_tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' https://github.com/neovim/neovim/releases/latest)"
