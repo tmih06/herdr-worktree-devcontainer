@@ -1,0 +1,18 @@
+{
+  "id": "oh-my-bash",
+  "version": "1.0.0",
+  "name": "oh-my-bash + ble.sh",
+  "description": "Installs oh-my-bash (theme/prompt framework) and ble.sh (Bash line editor providing autosuggestions, auto-complete and syntax highlighting) into the remote user's home, and wires dev's .bashrc: ble.sh source --attach=none first, oh-my-bash second, ble-attach last, matching the upstream integration guide. Set a version option to an empty string to skip that tool.",
+  "options": {
+    "ohMyBashVersion": {
+      "type": "string",
+      "default": "master",
+      "description": "Git ref (branch, tag or commit) of ohmybash/oh-my-bash to clone. Empty string skips installation."
+    },
+    "bleVersion": {
+      "type": "string",
+      "default": "v0.4.0-devel3",
+      "description": "ble.sh release tag (the prebuilt ble-<version-without-v>.tar.xz asset is extracted into ~/.local/share/blesh). Empty string skips installation."
+    }
+  }
+}

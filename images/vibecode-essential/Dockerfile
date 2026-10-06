@@ -56,6 +56,14 @@ RUN /usr/local/share/vibecode-essential/install-pinned-tools.sh
 RUN /usr/local/share/vibecode-essential/install-agent-tools.sh
 RUN /usr/local/share/vibecode-essential/install-editors.sh
 
+# oh-my-bash + ble.sh + the compact-agnoster prompt theme + git aliases, wired
+# into dev's .bashrc — the same feature meltiply applies per-workspace, baked
+# in here so every worktree gets it without a feature build.
+COPY oh-my-bash/ /usr/local/share/vibecode-essential/oh-my-bash/
+RUN OHMYBASHVERSION=master BLEVERSION=v0.4.0-devel3 \
+    _REMOTE_USER="${USER_NAME}" _REMOTE_USER_HOME="/home/${USER_NAME}" \
+    /usr/local/share/vibecode-essential/oh-my-bash/install.sh
+
 # --only-shell installs the headless shell only: the headed Chromium binary
 # (~390MB) can never draw in a container without Xvfb, and Playwright's default
 # headless launch uses the shell. `chromium` on PATH still works.

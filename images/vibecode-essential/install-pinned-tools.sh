@@ -40,16 +40,15 @@ install_release gitleaks/gitleaks "v${GITLEAKS_VERSION}" "gitleaks_${GITLEAKS_VE
 install_release oasdiff/oasdiff "v${OASDIFF_VERSION}" "oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz" checksums.txt oasdiff
 
 # typos publishes self-contained musl binaries, including aarch64. The digest
-# comes from GitHub's asset metadata — which rate-limits shared runner IPs —
-# so retry before trusting it, and never feed an empty digest to sha256sum.
+# is read from the release page's embedded metadata — api.github.com
+# rate-limits shared CI runner IPs to 60/hr and dies unpredictably mid-build;
+# expanded_assets serves the same digests as ordinary HTML.
 typos_asset="typos-v${TYPOS_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz"
-typos_sha=""
-for _ in 1 2 3; do
-  typos_sha="$(curl -fsSL "https://api.github.com/repos/crate-ci/typos/releases/tags/v${TYPOS_VERSION}" | jq -r --arg asset "$typos_asset" '.assets[]? | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")' 2>/dev/null || true)"
-  [ -n "$typos_sha" ] && break
-  sleep 5
-done
-[ -n "$typos_sha" ] || { echo "ERROR: no sha256 digest for ${typos_asset} (API rate limit?)" >&2; exit 1; }
+typos_re="$(printf '%s' "$typos_asset" | sed 's/\./\\./g')"
+typos_sha="$(curl -fsSL "https://github.com/crate-ci/typos/releases/expanded_assets/v${TYPOS_VERSION}" \
+  | grep -oE 'aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"' \
+  | sed -n "s/.*digest for ${typos_re}\".*value=\"sha256:\([0-9a-f]*\)\".*/\1/p" | head -1)"
+[ -n "$typos_sha" ] || { echo "ERROR: no sha256 digest for ${typos_asset} on the release page" >&2; exit 1; }
 curl -fsSLo typos.tar.gz "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/${typos_asset}"
 printf '%s  typos.tar.gz\n' "$typos_sha" | sha256sum --check -
 mkdir typos

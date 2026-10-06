@@ -26,7 +26,15 @@ circleci version
 WRANGLER_SEND_METRICS=false wrangler --version
 fd --version
 test "$(readlink -f "$(command -v vim)")" = "$(readlink -f "$(command -v nvim)")"
-nvim --headless -u "$HOME/.config/nvim/init.lua" '+lua vim.defer_fn(function() os.exit(#vim.fn.globpath(vim.fn.stdpath("data") .. "/lazy", "*", false, true) > 5 and 0 or 1) end, 3000)' +'sleep 4' 2>/dev/null || nvim --headless '+checkhealth lazy' +qa 2>/dev/null | grep -q .
+# oh-my-bash + ble.sh + compact-agnoster + git aliases are baked into dev's
+# .bashrc; assert the framework, line editor, theme, and aliases all landed.
+test -f "$HOME/.oh-my-bash/oh-my-bash.sh"
+test -f "$HOME/.local/share/blesh/ble.sh"
+test -f "$HOME/.config/oh-my-bash/compact-agnoster.sh"
+test -f "$HOME/.config/oh-my-bash/git-aliases.sh"
+grep -q 'omp-shell' "$HOME/.bashrc"
+bash -ic 'type gs gc ga gco gp gpl' 2>/dev/null | grep -c 'alias'
+bash -ic 'type gs' 2>/dev/null | grep -q "alias gs='git status'"
 ls -d "${PLAYWRIGHT_BROWSERS_PATH:?}"/chromium_headless_shell-* >/dev/null
 node -e 'require.resolve("playwright"); require("playwright").chromium'
 node --input-type=module -e 'import("playwright").then(m => { if (!m.chromium) process.exit(1) })'

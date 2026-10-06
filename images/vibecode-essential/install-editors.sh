@@ -12,19 +12,18 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
-asset_sha() { # repo tag asset -> sha256 from GitHub's own digest metadata
-  # api.github.com rate-limits shared runner IPs; retry, then fail loudly —
-  # an empty digest must never reach sha256sum as a malformed line.
-  local sha=""
-  for _ in 1 2 3; do
-    sha="$(curl -fsSL "https://api.github.com/repos/$1/releases/tags/$2" \
-      | jq -r --arg asset "$3" '.assets[]? | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")' \
-      2>/dev/null || true)"
-    [ -n "$sha" ] && break
-    sleep 5
-  done
+asset_sha() { # repo tag asset -> sha256, from the release page's embedded
+  # digest list. api.github.com rate-limits shared CI runner IPs to 60/hr and
+  # dies unpredictably mid-build; expanded_assets serves the same digests as
+  # ordinary HTML. Paired by the clipboard-copy widget's aria-label + value.
+  local sha re
+  re="$(printf '%s' "$3" | sed 's/\./\\./g')"
+  sha="$(curl -fsSL "https://github.com/$1/releases/expanded_assets/$2" \
+    | grep -oE 'aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"' \
+    | sed -n "s/.*digest for ${re}\".*value=\"sha256:\([0-9a-f]*\)\".*/\1/p" \
+    | head -1)"
   if [ -z "$sha" ]; then
-    echo "ERROR: no sha256 digest for $1@$2/$3 (API rate limit?)" >&2
+    echo "ERROR: no sha256 digest for $1@$2/$3 on the release page" >&2
     return 1
   fi
   printf '%s' "$sha"
