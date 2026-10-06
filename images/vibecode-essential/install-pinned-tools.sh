@@ -11,13 +11,12 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
-# Replace the inherited NodeSource runtime, rather than retaining two Node versions.
+# Node goes straight to /usr/local — the image is FROM base, so there is no
+# NodeSource package to replace and nothing to purge.
 node_archive="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"
 curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${node_archive}"
 curl -fsSLo node-checksums.txt "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
 grep " ${node_archive}$" node-checksums.txt | sha256sum --check -
-apt-get purge -y nodejs
-rm -rf /usr/lib/node_modules/bun /usr/lib/node_modules/corepack
 tar -xJf "$node_archive" -C /usr/local --strip-components=1
 npm install --global "bun@${BUN_VERSION}" corepack@latest
 corepack enable
@@ -40,9 +39,23 @@ install_release opentofu/opentofu "v${TOFU_VERSION}" "tofu_${TOFU_VERSION}_linux
 install_release gitleaks/gitleaks "v${GITLEAKS_VERSION}" "gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" gitleaks
 install_release oasdiff/oasdiff "v${OASDIFF_VERSION}" "oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz" checksums.txt oasdiff
 
-# typos publishes self-contained musl binaries, including aarch64.
+# typos publishes self-contained musl binaries, including aarch64. The digest
+# is read from the release page's embedded metadata — api.github.com
+# rate-limits shared CI runner IPs to 60/hr and dies unpredictably mid-build;
+# expanded_assets serves the same digests as ordinary HTML.
 typos_asset="typos-v${TYPOS_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz"
-typos_sha="$(curl -fsSL "https://api.github.com/repos/crate-ci/typos/releases/tags/v${TYPOS_VERSION}" | jq -er --arg asset "$typos_asset" '.assets[] | select(.name == $asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")')"
+typos_sha="$(curl -fsSL "https://github.com/crate-ci/typos/releases/expanded_assets/v${TYPOS_VERSION}" \
+  | awk -v asset="$typos_asset" '
+      # No early exit: quitting on first match SIGPIPEs curl (exit 23).
+      match($0, /<clipboard-copy[^>]*aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"/) {
+        tag = substr($0, RSTART, RLENGTH)
+        if (!found && index(tag, "digest for " asset "\"")) {
+          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); found = tag
+        }
+      }
+      END { if (found) print found }')"
+
+[ -n "$typos_sha" ] || { echo "ERROR: no sha256 digest for ${typos_asset} on the release page" >&2; exit 1; }
 curl -fsSLo typos.tar.gz "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/${typos_asset}"
 printf '%s  typos.tar.gz\n' "$typos_sha" | sha256sum --check -
 mkdir typos

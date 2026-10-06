@@ -45,8 +45,8 @@
     {
       "name": "vibecode-essential",
       "dir": "images/vibecode-essential",
-      "base": "node-bun-docker",
-      "description": "node-bun-docker plus pinned Node, Bun, OpenTofu, Gitleaks, typos, and oasdiff, with gh, Playwright, and coding-agent CLIs refreshed on every scheduled build"
+      "base": "base",
+      "description": "base plus pinned Node, Bun, OpenTofu, Gitleaks, typos, and oasdiff, Docker-in-Docker, gh, Playwright, LazyVim, yazi, and coding-agent CLIs refreshed on every scheduled build"
     }
   ]
 }

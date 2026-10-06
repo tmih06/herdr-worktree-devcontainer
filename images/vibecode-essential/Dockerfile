@@ -1,5 +1,13 @@
-# Batteries-included coding environment, retaining the node-bun-docker DinD setup.
-ARG BASE_IMAGE=ghcr.io/tmih06/herdr-devcontainer-node-bun-docker:latest
+# Batteries-included coding environment with the DinD setup of node-bun-docker.
+#
+# FROM base, not node-bun-docker: the parent ships NodeSource nodejs and
+# bun@latest, and this image replaces both with pinned versions. Docker layers
+# only ever add bytes — a purge in a later layer whiteouts files but the pulled
+# image still carries them — so inheriting them would bake ~320MB of dead
+# NodeSource + Bun layers into every pull. The DinD stack, cloudflared, gh, and
+# dev-group wiring are replicated here instead; keep them in step with
+# images/node-bun-docker/Dockerfile.
+ARG BASE_IMAGE=ghcr.io/tmih06/herdr-devcontainer-base:latest
 FROM ${BASE_IMAGE}
 
 ARG USER_NAME=dev
@@ -18,40 +26,71 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       bash git make curl jq gnupg ca-certificates coreutils findutils grep sed gawk \
-      procps util-linux iproute2 tar gzip unzip xz-utils sudo cloudflared \
-      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+      procps util-linux iproute2 tar gzip unzip xz-utils sudo \
+      # nvim needs fd for Telescope file picking; Ubuntu names the binary fdfind.
+      fd-find; \
+    ln -sf /usr/bin/fdfind /usr/local/bin/fd; \
     install -m 0755 -d /etc/apt/keyrings; \
+    # Repos copied from images/node-bun-docker: Cloudflare, Docker, GitHub CLI.
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /etc/apt/keyrings/cloudflare-main.gpg; \
+    chmod a+r /etc/apt/keyrings/cloudflare-main.gpg; \
+    printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' > /etc/apt/sources.list.d/cloudflared.list; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
+      "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
+      "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.sources; \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
       "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends gh; \
+    apt-get install -y --no-install-recommends gh cloudflared \
+      docker-ce docker-ce-cli containerd.io iptables docker-buildx-plugin docker-compose-plugin; \
+    usermod -aG docker "${USER_NAME}"; \
+    printf '\n# Load approved .envrc files in interactive Bash shells.\neval "$(direnv hook bash)"\n' >> "/home/${USER_NAME}/.bashrc"; \
     rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0755 install-pinned-tools.sh install-agent-tools.sh /usr/local/share/vibecode-essential/
+COPY --chmod=0755 install-pinned-tools.sh install-agent-tools.sh install-editors.sh compress-binaries.sh /usr/local/share/vibecode-essential/
 RUN /usr/local/share/vibecode-essential/install-pinned-tools.sh
 RUN /usr/local/share/vibecode-essential/install-agent-tools.sh
+RUN /usr/local/share/vibecode-essential/install-editors.sh
 
-# Browsers live in the standard Playwright cache, and the package is installed in
-# the global npm prefix. Node does not search that prefix on its own, so both
-# resolution routes are provided: NODE_PATH for `require`, and a symlink at the
-# filesystem root, which is the one `node_modules` every module path includes —
-# that also makes `import 'playwright'` work from any directory, which NODE_PATH
-# alone does not cover.
+# oh-my-bash + ble.sh + the compact-agnoster prompt theme + git aliases, wired
+# into dev's .bashrc — the same feature meltiply applies per-workspace, baked
+# in here so every worktree gets it without a feature build.
+COPY oh-my-bash/ /usr/local/share/vibecode-essential/oh-my-bash/
+RUN OHMYBASHVERSION=master BLEVERSION=v0.4.0-devel3 \
+    _REMOTE_USER="${USER_NAME}" _REMOTE_USER_HOME="/home/${USER_NAME}" \
+    /usr/local/share/vibecode-essential/oh-my-bash/install.sh
+
+# --only-shell installs the headless shell only: the headed Chromium binary
+# (~390MB) can never draw in a container without Xvfb, and Playwright's default
+# headless launch uses the shell. `chromium` on PATH still works.
 RUN set -eux; \
     npm install --global playwright@latest; \
-    playwright install --with-deps chromium; \
+    playwright install --with-deps --only-shell chromium; \
     ln -sfn /usr/local/lib/node_modules /node_modules; \
-    chromium_path="$(NODE_PATH=/usr/local/lib/node_modules node -p "require('playwright').chromium.executablePath()")"; \
-    printf '#!/bin/sh\nexec "%s" "$@"\n' "$chromium_path" > /usr/local/bin/chromium; \
+    shell_path="$(find "${PLAYWRIGHT_BROWSERS_PATH}" -name chrome-headless-shell -type f | head -1)"; \
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$shell_path" > /usr/local/bin/chromium; \
     chmod 0755 /usr/local/bin/chromium; \
-    chmod -R a+rX /usr/local/lib/node_modules/playwright /ms-playwright; \
+    chmod -R a+rX /usr/local/lib/node_modules/playwright "${PLAYWRIGHT_BROWSERS_PATH}"; \
     npm cache clean --force; \
     rm -rf /var/lib/apt/lists/*
 
+# Last: compress the big self-contained binaries once everything is installed.
+RUN /usr/local/share/vibecode-essential/compress-binaries.sh
+
 COPY --chmod=0755 smoke.sh /usr/local/share/vibecode-essential-smoke.sh
+COPY --chmod=0755 docker-init.sh /usr/local/share/docker-init.sh
+
+# Keep in sync with images/node-bun-docker/Dockerfile — this image replicates
+# its DinD contract rather than inheriting it.
+LABEL devcontainer.metadata='[{"privileged":true,"init":true,"entrypoint":"/usr/local/share/docker-init.sh","mounts":[{"source":"wtdc-dind-docker-${devcontainerId}","target":"/var/lib/docker","type":"volume"},{"source":"wtdc-dind-containerd-${devcontainerId}","target":"/var/lib/containerd","type":"volume"}]}]'
+
+VOLUME ["/var/lib/docker", "/var/lib/containerd"]
+ENTRYPOINT ["/usr/local/share/docker-init.sh"]
+CMD ["sleep", "infinity"]
 
 USER ${USER_NAME}
 WORKDIR /workspaces
-# ENTRYPOINT, CMD, DinD volumes, and devcontainer metadata are inherited unchanged.

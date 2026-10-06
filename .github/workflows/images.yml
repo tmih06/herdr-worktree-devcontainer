@@ -111,10 +111,15 @@ jobs:
             | map(. as $img | if ($tier1 | index($img.base)) == null
                   then error("\($img.name): parent \"\($img.base)\" is not the root template or one level below it; CI supports one level of nesting")
                   else $img end)
-            | {include: map(. as $img | {name, dir,
-                ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
-                base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
-                base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
+            # An empty matrix skips build-nested outright, and this Actions
+            # version counts skipped check-runs as a suite failure. Emit a
+            # real entry that no-ops instead; name == "skip" gates the steps.
+            | if length == 0 then {include: [{name: "skip", dir: ".", ref: "", base_ref: "", base_dir: ""}]}
+              else {include: map(. as $img | {name, dir,
+                  ref: ($reg + "/" + $pre + "-" + $img.name + ":" + $tag),
+                  base_ref: ($reg + "/" + $pre + "-" + $img.base + ":" + $tag),
+                  base_dir: ($doc.images | map(select(.name == $img.base))[0].dir)})}
+              end
           ' images/manifest.json)
 
           echo "base=$base" >> "$GITHUB_OUTPUT"
@@ -217,12 +222,15 @@ jobs:
       matrix: ${{ fromJson(needs.plan.outputs.nested) }}
     steps:
       - uses: actions/checkout@v4
+        if: matrix.name != 'skip'
       - uses: docker/setup-qemu-action@v3
-        if: github.event_name != 'pull_request'
+        if: matrix.name != 'skip' && github.event_name != 'pull_request'
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@v3
+        if: matrix.name != 'skip'
       - name: Log in to GHCR
+        if: matrix.name != 'skip'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -238,14 +246,14 @@ jobs:
       # ARG default for BASE_IMAGE, the published base — the same base every
       # other PR leg builds against.
       - name: Build parent locally (pull requests only)
-        if: github.event_name == 'pull_request'
+        if: matrix.name != 'skip' && github.event_name == 'pull_request'
         run: |
           docker buildx build --builder default \
             --tag wtdc-parent:${{ matrix.name }} \
             ${{ matrix.base_dir }}
       - name: Build and push
         uses: docker/build-push-action@v6
-        if: github.event_name != 'pull_request'
+        if: matrix.name != 'skip' && github.event_name != 'pull_request'
         with:
           context: ${{ matrix.dir }}
           platforms: ${{ env.PLATFORMS }}
@@ -259,7 +267,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Build against local parent (pull requests only)
-        if: github.event_name == 'pull_request'
+        if: matrix.name != 'skip' && github.event_name == 'pull_request'
         run: |
           docker buildx build --builder default \
             --build-arg BASE_IMAGE=wtdc-parent:${{ matrix.name }} \
@@ -287,15 +295,16 @@ jobs:
           npm install --global @devcontainers/cli
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck images/node-bun-docker/docker-init.sh tests/dind-smoke.sh images/vibecode-essential/*.sh
+          shellcheck images/node-bun-docker/docker-init.sh images/vibecode-essential/docker-init.sh tests/dind-smoke.sh images/vibecode-essential/*.sh
       # Both DinD images build the whole chain locally: vibecode-essential is
-      # FROM node-bun-docker, which is FROM base. Plain docker build so each
-      # FROM resolves to the tag built on this runner.
+      # FROM base too now — inheriting node-bun-docker would bake in ~320MB of
+      # NodeSource nodejs and bun@latest layers this image immediately replaces.
+      # Plain docker build so each FROM resolves to the tag built on this runner.
       - name: Build images on the runner
         run: |
           docker build --tag wtdc-base:verify images/base
           docker build --build-arg BASE_IMAGE=wtdc-base:verify --tag wtdc-node-bun-docker:verify images/node-bun-docker
-          docker build --build-arg BASE_IMAGE=wtdc-node-bun-docker:verify --tag wtdc-vibecode-essential:verify images/vibecode-essential
+          docker build --build-arg BASE_IMAGE=wtdc-base:verify --tag wtdc-vibecode-essential:verify images/vibecode-essential
       # The image's own check of every pinned and unpinned tool. The inherited
       # entrypoint would start dockerd, so run the script as the entrypoint;
       # it needs client tools only.
@@ -314,13 +323,13 @@ jobs:
   # it is expensive.
   verify:
     name: verify ${{ matrix.platform }}
-    needs: [plan, build-base, build, build-nested]
-    # The skipped arm is for the day the manifest has no nested templates: an
-    # empty matrix marks build-nested skipped, and without naming that result
-    # acceptable, needs would skip this job and publish unverified.
-    if: >-
-      github.event_name != 'pull_request' &&
-      (needs.build-nested.result == 'success' || needs.build-nested.result == 'skipped')
+    # build-nested is deliberately not a need: an empty nested matrix reports
+    # build-nested skipped, and needs-skip overrides any if (even always()),
+    # skipping this job — which check-suite aggregation records as a failure.
+    # Limitation: if nested templates return, nested refs race their builds
+    # here; per-arch nested verification belongs in build-nested's own legs.
+    needs: [plan, build-base, build]
+    if: always() && !failure() && !cancelled()
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
