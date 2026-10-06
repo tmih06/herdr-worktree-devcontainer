@@ -19,12 +19,14 @@ asset_sha() { # repo tag asset -> sha256, from the release page's embedded
   local sha
   sha="$(curl -fsSL "https://github.com/$1/releases/expanded_assets/$2" \
     | awk -v asset="$3" '
+      # No early exit: quitting on first match SIGPIPEs curl (exit 23).
       match($0, /<clipboard-copy[^>]*aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"/) {
         tag = substr($0, RSTART, RLENGTH)
-        if (index(tag, "digest for " asset "\"")) {
-          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); print tag; exit
+        if (!found && index(tag, "digest for " asset "\"")) {
+          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); found = tag
         }
-      }')"
+      }
+      END { if (found) print found }')"
   if [ -z "$sha" ]; then
     echo "ERROR: no sha256 digest for $1@$2/$3 on the release page" >&2
     return 1

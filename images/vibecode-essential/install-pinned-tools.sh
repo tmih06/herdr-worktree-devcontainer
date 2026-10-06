@@ -46,12 +46,14 @@ install_release oasdiff/oasdiff "v${OASDIFF_VERSION}" "oasdiff_${OASDIFF_VERSION
 typos_asset="typos-v${TYPOS_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz"
 typos_sha="$(curl -fsSL "https://github.com/crate-ci/typos/releases/expanded_assets/v${TYPOS_VERSION}" \
   | awk -v asset="$typos_asset" '
+      # No early exit: quitting on first match SIGPIPEs curl (exit 23).
       match($0, /<clipboard-copy[^>]*aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"/) {
         tag = substr($0, RSTART, RLENGTH)
-        if (index(tag, "digest for " asset "\"")) {
-          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); print tag; exit
+        if (!found && index(tag, "digest for " asset "\"")) {
+          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); found = tag
         }
-      }')"
+      }
+      END { if (found) print found }')"
 
 [ -n "$typos_sha" ] || { echo "ERROR: no sha256 digest for ${typos_asset} on the release page" >&2; exit 1; }
 curl -fsSLo typos.tar.gz "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/${typos_asset}"
