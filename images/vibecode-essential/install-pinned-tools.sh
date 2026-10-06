@@ -11,13 +11,12 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
-# Replace the inherited NodeSource runtime, rather than retaining two Node versions.
+# Node goes straight to /usr/local — the image is FROM base, so there is no
+# NodeSource package to replace and nothing to purge.
 node_archive="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"
 curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${node_archive}"
 curl -fsSLo node-checksums.txt "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
 grep " ${node_archive}$" node-checksums.txt | sha256sum --check -
-apt-get purge -y nodejs
-rm -rf /usr/lib/node_modules/bun /usr/lib/node_modules/corepack
 tar -xJf "$node_archive" -C /usr/local --strip-components=1
 npm install --global "bun@${BUN_VERSION}" corepack@latest
 corepack enable

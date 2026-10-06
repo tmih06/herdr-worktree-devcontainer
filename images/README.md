@@ -175,12 +175,15 @@ building a useless `-uid` copy of the image.
 
 ## `vibecode-essential`
 
-`vibecode-essential` is `FROM node-bun-docker`, so everything in that row —
-the DinD daemon, its entrypoint, volumes, and `devcontainer.metadata` — is
-inherited unchanged and carries the same requirements: run privileged, with an
-init process, and with dedicated volumes for `/var/lib/docker` and
-`/var/lib/containerd`. The devcontainer config and `docker run` examples above
-apply verbatim; swap the tag for
+`vibecode-essential` is `FROM base` and replicates `node-bun-docker`'s DinD
+stack itself — Docker Engine + CLI, Compose, Buildx, cloudflared, its
+entrypoint, volumes, and `devcontainer.metadata` — rather than inheriting it.
+Inheriting would bake ~320MB of NodeSource nodejs and `bun@latest` layers that
+this image immediately replaces with pinned versions; a Docker layer can only
+whiteout files, never reclaim bytes. The DinD requirements are the same: run
+privileged, with an init process, and with dedicated volumes for
+`/var/lib/docker` and `/var/lib/containerd`. The devcontainer config and
+`docker run` examples above apply verbatim; swap the tag for
 `ghcr.io/tmih06/herdr-devcontainer-vibecode-essential:latest`.
 
 What it adds on top:
@@ -193,7 +196,7 @@ What it adds on top:
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`) |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                  |
 |                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`            |
-| oasdiff 1.17.0           | every apt package, Docker included (Docker's apt repository)                       |
+|                          | editors: `yazi`, `lazygit`, `nvim` + LazyVim (plugins synced at build)             |
 
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
 and download with checksum verification; bump the ARG to bump the pin. The
@@ -205,13 +208,18 @@ republishes `:latest` by re-resolving every unpinned tool against upstream
 rather than replaying the layer cache. A push under `images/` publishes the
 same refresh immediately.
 
-Chromium is installed by Playwright and is also on `PATH` as `chromium`, so a
-tool that shells out to a browser works without a version-pinned path.
-`playwright` resolves in the global npm prefix (`require('playwright')` works
-without `NODE_PATH`), and browsers live in the standard
-`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` cache.
+Chromium is installed by Playwright with `--only-shell`: the image ships the
+headless shell (what `chromium.launch()` uses by default) on `PATH` as
+`chromium`, without the ~390MB headed binary that can never draw inside a
+container anyway. `playwright` resolves in the global npm prefix
+(`require('playwright')` works without `NODE_PATH`), and browsers live in the
+standard `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` cache.
 `circleci` and `wakatime-cli` report their version without any credentials;
-run `circleci auth login` to use them.
+run `circleci auth login` to use them. `vim` and `vi` alias `nvim`; LazyVim's
+treesitter parsers are compiled at build time, after which the compiler is
+removed from the same layer. Large self-contained binaries (tofu, cbm, omp,
+node, bun, the Docker engine) are UPX-packed at ~30% of their size, with a
+per-binary verify-and-restore so an incompatible format stays uncompressed.
 
 The image carries its own check at
 `/usr/local/share/vibecode-essential-smoke.sh`: it asserts the pinned versions,

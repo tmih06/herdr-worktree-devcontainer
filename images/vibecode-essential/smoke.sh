@@ -10,11 +10,11 @@ gitleaks version | grep -Fx 8.30.1
 typos --version | grep -F 1.35.5
 oasdiff --version | grep -F 1.17.0
 
-for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode wakatime-cli circleci chromium wrangler; do
+for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode wakatime-cli circleci chromium wrangler yazi lazygit nvim vim vi fd; do
   command -v "$tool"
 done
 test -s /etc/ssl/certs/ca-certificates.crt
-for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode chromium; do
+for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode chromium yazi lazygit nvim; do
   "$tool" --version
 done
 docker compose version
@@ -24,7 +24,10 @@ playwright --version
 wakatime-cli --version
 circleci version
 WRANGLER_SEND_METRICS=false wrangler --version
-ls -d "${PLAYWRIGHT_BROWSERS_PATH:?}"/chromium-* >/dev/null
+fd --version
+test "$(readlink -f "$(command -v vim)")" = "$(readlink -f "$(command -v nvim)")"
+nvim --headless -u "$HOME/.config/nvim/init.lua" '+lua vim.defer_fn(function() os.exit(#vim.fn.globpath(vim.fn.stdpath("data") .. "/lazy", "*", false, true) > 5 and 0 or 1) end, 3000)' +'sleep 4' 2>/dev/null || nvim --headless '+checkhealth lazy' +qa 2>/dev/null | grep -q .
+ls -d "${PLAYWRIGHT_BROWSERS_PATH:?}"/chromium_headless_shell-* >/dev/null
 node -e 'require.resolve("playwright"); require("playwright").chromium'
 node --input-type=module -e 'import("playwright").then(m => { if (!m.chromium) process.exit(1) })'
 
