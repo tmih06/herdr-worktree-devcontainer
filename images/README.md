@@ -196,7 +196,7 @@ What it adds on top:
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`) |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                  |
 |                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`            |
-|                          | editors: `yazi`, `lazygit`, `nvim` + LazyVim (plugins synced at build)             |
+|                          | editors: `yazi`, `nvim` + LazyVim (plugins synced at build); `lazygit` links to `lazygitrs` |
 
 Pinned versions are `ARG`s at the top of `images/vibecode-essential/Dockerfile`
 and download with checksum verification; bump the ARG to bump the pin. The

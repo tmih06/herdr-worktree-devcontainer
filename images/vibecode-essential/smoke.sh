@@ -17,6 +17,8 @@ test -s /etc/ssl/certs/ca-certificates.crt
 for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode chromium yazi lazygit nvim; do
   "$tool" --version
 done
+# lazygit is a link to lazygitrs (a drop-in reimplementation, not upstream).
+test "$(readlink -f "$(command -v lazygit)")" = "$(readlink -f "$(command -v lazygitrs)")"
 docker compose version
 docker buildx version
 direnv version
