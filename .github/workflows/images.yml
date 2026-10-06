@@ -316,13 +316,13 @@ jobs:
   verify:
     name: verify ${{ matrix.platform }}
     needs: [plan, build-base, build, build-nested]
-    # The skipped arm is for the day the manifest has no nested templates: an
-    # empty matrix marks build-nested skipped, and without naming that result
-    # acceptable, needs would skip this job and publish unverified. This runs on
-    # PRs too: it verifies the published :latest images, not the PR build, and a
-    # skipped matrix job here reports the whole check-suite as failed.
-    if: >-
-      needs.build-nested.result == 'success' || needs.build-nested.result == 'skipped'
+    # needs-skip beats the if below: with no nested templates in the manifest,
+    # build-nested's matrix is empty and it reports skipped, which skips this
+    # job outright unless always() forces evaluation. failure()/cancelled()
+    # then gate on the real signal — a skipped upstream is not a failure.
+    # This runs on PRs too: it verifies the published :latest images, not the
+    # PR build.
+    if: always() && !failure() && !cancelled()
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
