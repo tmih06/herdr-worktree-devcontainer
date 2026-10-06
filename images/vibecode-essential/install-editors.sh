@@ -16,12 +16,15 @@ asset_sha() { # repo tag asset -> sha256, from the release page's embedded
   # digest list. api.github.com rate-limits shared CI runner IPs to 60/hr and
   # dies unpredictably mid-build; expanded_assets serves the same digests as
   # ordinary HTML. Paired by the clipboard-copy widget's aria-label + value.
-  local sha re
-  re="$(printf '%s' "$3" | sed 's/\./\\./g')"
+  local sha
   sha="$(curl -fsSL "https://github.com/$1/releases/expanded_assets/$2" \
-    | grep -oE 'aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"' \
-    | sed -n "s/.*digest for ${re}\".*value=\"sha256:\([0-9a-f]*\)\".*/\1/p" \
-    | head -1)"
+    | awk -v asset="$3" '
+      match($0, /<clipboard-copy[^>]*aria-label="Copy to clipboard digest for [^"]+"[^>]*value="sha256:[0-9a-f]+"/) {
+        tag = substr($0, RSTART, RLENGTH)
+        if (index(tag, "digest for " asset "\"")) {
+          sub(/.*value="sha256:/, "", tag); sub(/".*/, "", tag); print tag; exit
+        }
+      }')"
   if [ -z "$sha" ]; then
     echo "ERROR: no sha256 digest for $1@$2/$3 on the release page" >&2
     return 1
