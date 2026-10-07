@@ -217,9 +217,12 @@ standard `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` cache.
 `circleci` and `wakatime-cli` report their version without any credentials;
 run `circleci auth login` to use them. `vim` and `vi` alias `nvim`; LazyVim's
 treesitter parsers are compiled at build time, after which the compiler is
-removed from the same layer. Large self-contained binaries (tofu, cbm, omp,
+removed from the same layer. Large self-contained binaries (tofu, cbm,
 node, bun, the Docker engine) are UPX-packed at ~30% of their size, with a
 per-binary verify-and-restore so an incompatible format stays uncompressed.
+bun-compiled binaries (omp, opencode, claude) are skipped: their bundled
+assets are read lazily from the binary's own file image, which UPX
+invalidates — the binary still runs but asset reads return garbage.
 
 The image carries its own check at
 `/usr/local/share/vibecode-essential-smoke.sh`: it asserts the pinned versions,

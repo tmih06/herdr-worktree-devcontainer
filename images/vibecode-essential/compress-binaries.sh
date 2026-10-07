@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # UPX-compress the large self-contained ELF binaries. Measured on arm64:
 # tofu 105→33MB, typos 27→7.8MB. A packed binary that fails self-test or
-# --version is restored from backup, so a UPX-incompatible format (bun-compiled
-# exes read their own trailer) degrades to "not compressed", never "broken".
+# --version is restored from backup, so a UPX-incompatible format degrades
+# to "not compressed", never "broken".
 set -euo pipefail
 
 apt-get update
@@ -12,6 +12,15 @@ pack() { # path verify-args...
   local bin="$1"; shift
   [ -f "$bin" ] || return 0
   case "$(file -b "$bin" 2>/dev/null || true)" in *ELF*) ;; *) return 0 ;; esac
+  # bun --compile exes (`$bunfs` marker) embed assets that are read lazily
+  # from their own on-disk image. UPX changes that layout, so the binary
+  # still runs but bundled file reads return garbage — omp dies with
+  # AgentParsingError on its embedded scout.md. --version cannot see this;
+  # refuse to pack the class outright.
+  if LC_ALL=C grep -aqm1 "\$bunfs" "$bin"; then
+    printf 'skipped %s (bun-compiled, embeds lazy assets)\n' "$bin"
+    return 0
+  fi
   local size_before backup
   size_before=$(stat -c%s "$bin")
   backup="$(mktemp)"
@@ -35,6 +44,7 @@ pack /usr/local/bin/gitleaks version
 pack /usr/local/bin/typos --version
 pack /usr/local/bin/oasdiff --version
 pack /usr/local/bin/codebase-memory-mcp --version
+# bun-compiled: kept in the list so the guard prints an explicit skip.
 pack /usr/local/bin/omp --version
 pack /usr/local/bin/rtk --version
 pack /usr/local/bin/lazydocker --version

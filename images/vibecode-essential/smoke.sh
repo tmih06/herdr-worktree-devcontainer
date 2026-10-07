@@ -18,6 +18,15 @@ for tool in git make docker dockerd gh cloudflared omp rtk lazydocker btop codex
   "$tool" --version
 done
 
+# omp is bun-compiled: --version exits without touching the bundled agent
+# files, which are read lazily from the binary's own image. UPX packing
+# breaks those reads (AgentParsingError on embedded scout.md), so exercise
+# them end-to-end.
+agents_dir="$(mktemp -d)"
+omp agents unpack --dir "$agents_dir" >/dev/null
+test "$(find "$agents_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ge 5
+rm -rf "$agents_dir"
+
 docker compose version
 docker buildx version
 direnv version
