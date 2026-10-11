@@ -59,7 +59,9 @@ pack /usr/local/bin/node --version
 
 # npm-delivered binaries (hardlinked siblings are repacked then relinked below)
 pack /usr/local/lib/node_modules/bun/bin/bun.exe --version
-pack /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe --version
+# opencode2 has no packaged `.exe` twin to relink: its main package ships only
+# a node shim, and the bun-compiled ELF lives in the platform package.
+pack /usr/local/lib/node_modules/opencode2/node_modules/opencode2-linux-*/bin/opencode2 --version
 pack /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe --version
 pack /usr/local/lib/node_modules/wrangler/node_modules/workerd/bin/workerd --version
 find /usr/local/lib/node_modules/@openai -name 'codex*' -type f -path '*bin*' \
@@ -77,8 +79,6 @@ done
 # UPX writes a fresh inode, which would silently double every hardlinked pair
 # (bun/bunx, the packaged exe and its bin/ twin). Re-link them after packing.
 ln -f /usr/local/lib/node_modules/bun/bin/bun.exe /usr/local/lib/node_modules/bun/bin/bunx.exe 2>/dev/null || true
-ln -f /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe \
-      /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-*/bin/opencode 2>/dev/null || true
 ln -f /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
       /usr/local/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-*/claude 2>/dev/null || true
 ln -f /usr/local/lib/node_modules/wrangler/node_modules/workerd/bin/workerd \

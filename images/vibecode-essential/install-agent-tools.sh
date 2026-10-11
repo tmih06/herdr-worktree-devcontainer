@@ -428,16 +428,16 @@ chmod 0755 /usr/local/bin/codebase-memory-session-mcp
 # Agent CLIs whose official install is npm. Each ships per-platform binaries
 # through optionalDependencies, so the global install resolves amd64/arm64
 # itself: codex (@openai/codex), Claude Code (@anthropic-ai/claude-code),
-# OpenCode (opencode-ai), and Cloudflare Workers tooling (wrangler).
+# OpenCode v2 (opencode2), and Cloudflare Workers tooling (wrangler).
 npm install --global \
   @openai/codex \
   @anthropic-ai/claude-code \
-  opencode-ai \
+  opencode2 \
   wrangler@latest
 npm cache clean --force
 
 # Fail the build loudly if anything landed wrong.
 for tool in omp codebase-memory-mcp codebase-memory-session-mcp rtk \
-            lazydocker btop direnv wakatime-cli circleci codex claude opencode wrangler; do
+            lazydocker btop direnv wakatime-cli circleci codex claude opencode2 wrangler; do
   command -v "$tool" >/dev/null
 done
