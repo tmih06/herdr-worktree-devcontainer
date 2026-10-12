@@ -7,7 +7,7 @@ set -euo pipefail
 # Asset spellings per upstream, keyed on the dpkg architecture.
 case "$(dpkg --print-architecture)" in
   amd64)
-    rust_arch=x86_64   # rtk, btop
+    rust_arch=x86_64   # rtk, lazygitrs, btop
     rtk_libc=musl      # rtk's x86_64 linux build is musl; its arm64 build is gnu
     omp_arch=x64       # oh-my-pi release binaries
     cbm_arch=amd64     # codebase-memory-mcp
@@ -56,6 +56,18 @@ latest_asset rtk-ai/rtk checksums.txt
 verify_sum checksums.txt "$rtk_archive"
 mkdir rtk && tar -xzf "$rtk_archive" -C rtk
 install -m 0755 rtk/rtk /usr/local/bin/rtk
+
+# lazygitrs — Rust lazygit rewrite (tmih06/lazygitrs): raw binary, no archive.
+# Its checksums.txt only lists the macOS assets, so the expected sha256 comes
+# from the release API's per-asset digest instead — same trust root as the
+# checksums file (HTTPS to GitHub) but actually covering the linux builds.
+lgrs_asset="lazygitrs-linux-${rust_arch}"
+latest_asset tmih06/lazygitrs "$lgrs_asset"
+expected_sha="$(curl -fsSL https://api.github.com/repos/tmih06/lazygitrs/releases/latest \
+  | jq -r --arg name "$lgrs_asset" '.assets[] | select(.name == $name) | .digest | sub("^sha256:"; "")')"
+[ -n "$expected_sha" ]
+printf '%s  %s\n' "$expected_sha" "$lgrs_asset" | sha256sum --check -
+install -m 0755 "$lgrs_asset" /usr/local/bin/lazygitrs
 
 # lazydocker (jesseduffield/lazydocker). Asset names embed the version, so the
 # tag is resolved from the /releases/latest redirect instead of the API.
@@ -438,6 +450,6 @@ npm cache clean --force
 
 # Fail the build loudly if anything landed wrong.
 for tool in omp codebase-memory-mcp codebase-memory-session-mcp rtk \
-            lazydocker btop direnv wakatime-cli circleci codex claude opencode2 wrangler; do
+            lazygitrs lazydocker btop direnv wakatime-cli circleci codex claude opencode2 wrangler; do
   command -v "$tool" >/dev/null
 done

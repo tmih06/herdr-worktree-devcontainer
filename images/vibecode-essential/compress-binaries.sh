@@ -53,7 +53,7 @@ pack /usr/local/bin/direnv version
 pack /usr/local/bin/wakatime-cli --version
 pack /usr/local/bin/circleci version
 pack /usr/local/bin/yazi --version
-pack /usr/local/bin/lazygit --version
+pack /usr/local/bin/lazygitrs --version
 pack /usr/local/bin/nvim --version
 pack /usr/local/bin/node --version
 

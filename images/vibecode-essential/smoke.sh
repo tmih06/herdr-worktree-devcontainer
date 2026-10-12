@@ -10,13 +10,15 @@ gitleaks version | grep -Fx 8.30.1
 typos --version | grep -F 1.35.5
 oasdiff --version | grep -F 1.17.0
 
-for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazydocker btop codex claude opencode2 wakatime-cli circleci chromium wrangler yazi lazygit nvim vim vi fd file 7z unar lsar ffmpegthumbnailer pdfinfo convert identify rg fzf zoxide; do
+for tool in git bash make docker dockerd gh curl jq gpg env find grep sed awk ps lsblk ip tar gzip unzip xz sudo cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode2 wakatime-cli circleci chromium wrangler yazi lazygit nvim vim vi fd file 7z unar lsar ffmpegthumbnailer pdfinfo convert identify rg fzf zoxide; do
   command -v "$tool"
 done
 test -s /etc/ssl/certs/ca-certificates.crt
-for tool in git make docker dockerd gh cloudflared omp rtk lazydocker btop codex claude opencode2 chromium yazi lazygit nvim; do
+for tool in git make docker dockerd gh cloudflared omp rtk lazygitrs lazydocker btop codex claude opencode2 chromium yazi lazygit nvim; do
   "$tool" --version
 done
+# lazygit is a link to lazygitrs (a drop-in reimplementation, not upstream).
+test "$(readlink -f "$(command -v lazygit)")" = "$(readlink -f "$(command -v lazygitrs)")"
 
 # omp is bun-compiled: --version exits without touching the bundled agent
 # files, which are read lazily from the binary's own image. UPX packing
