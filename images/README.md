@@ -203,7 +203,7 @@ What it adds on top:
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Node.js 24.18.0          | `gh` (GitHub's apt repository)                                                                                                                                                                                          |
 | Bun 1.4.2                | `playwright` + bundled Chromium (`playwright@latest`)                                                                                                                                                                   |
-| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode2`                                                                                                                                                         |
+| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                                                                                                                                                          |
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`)                                                                                                                                      |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                                                                                                                                                       |
 |                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`                                                                                                                                                 |
@@ -231,7 +231,7 @@ treesitter parsers are compiled at build time, after which the compiler is
 removed from the same layer. Large self-contained binaries (tofu, cbm,
 node, bun, the Docker engine) are UPX-packed at ~30% of their size, with a
 per-binary verify-and-restore so an incompatible format stays uncompressed.
-bun-compiled binaries (omp, opencode2, claude) are skipped: their bundled
+bun-compiled binaries (omp, opencode, claude) are skipped: their bundled
 assets are read lazily from the binary's own file image, which UPX
 invalidates — the binary still runs but asset reads return garbage.
 
