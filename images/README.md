@@ -58,7 +58,8 @@ export WTDC_TEMPLATE=node-bun
 # Node 24, latest Bun at build time, Docker-in-Docker, Compose, Make, direnv, cloudflared
 export WTDC_TEMPLATE=node-bun-docker
 
-# All of that, plus pinned dev tools and the coding-agent CLIs
+# All of that, plus pinned dev tools and the coding-agent CLIs. Uses the host's
+# Docker daemon through the forwarded socket instead of a nested one.
 export WTDC_TEMPLATE=vibecode-essential
 
 # or straight at an image
@@ -175,16 +176,26 @@ building a useless `-uid` copy of the image.
 
 ## `vibecode-essential`
 
-`vibecode-essential` is `FROM base` and replicates `node-bun-docker`'s DinD
-stack itself — Docker Engine + CLI, Compose, Buildx, cloudflared, its
-entrypoint, volumes, and `devcontainer.metadata` — rather than inheriting it.
-Inheriting would bake ~320MB of NodeSource nodejs and `bun@latest` layers that
-this image immediately replaces with pinned versions; a Docker layer can only
-whiteout files, never reclaim bytes. The DinD requirements are the same: run
-privileged, with an init process, and with dedicated volumes for
-`/var/lib/docker` and `/var/lib/containerd`. The devcontainer config and
-`docker run` examples above apply verbatim; swap the tag for
-`ghcr.io/tmih06/herdr-devcontainer-vibecode-essential:latest`.
+`vibecode-essential` is `FROM base` and replicates `node-bun-docker`'s Docker
+stack itself — Engine + CLI, Compose, Buildx, cloudflared — rather than
+inheriting it. Inheriting would bake ~320MB of NodeSource nodejs and
+`bun@latest` layers that this image immediately replaces with pinned versions;
+a Docker layer can only whiteout files, never reclaim bytes.
+
+Where the two differ is how the Dev Container CLI runs them. This image bakes
+in `docker-outside-of-docker`: its `devcontainer.metadata` mounts the host's
+`/var/run/docker.sock` at `/var/run/docker-host.sock`, and the entrypoint
+either retargets the container's `docker` group to the socket's gid or proxies
+it with socat — the upstream feature's own logic, minus the per-workspace
+feature build. Nothing privileged starts; `docker` inside talks to the host
+daemon, so layers and containers are shared with every sibling container.
+Want isolation instead? `node-bun-docker` keeps the DinD contract — privileged
+container, own daemon, dedicated volumes.
+
+Plain `docker run` never mounts the host socket, so the entrypoint falls back
+to starting Docker-in-Docker itself — keep `--privileged --init` and supply
+volumes for `/var/lib/docker` and `/var/lib/containerd` as for
+`node-bun-docker` above.
 
 What it adds on top:
 
@@ -281,9 +292,10 @@ chain.
   version and tools the matrix alone cannot tell apart.
 - **verify-dind** — on every trigger including pull requests, builds `base`,
   `node-bun-docker`, and `vibecode-essential` locally on native amd64 and arm64
-  runners. Runs `dind-smoke.sh` against both DinD images: daemon startup,
-  nested builds and containers, Compose, restart, and a minimal Dev Container
-  config that relies on the image metadata.
+  runners. Runs `dind-smoke.sh` against both Docker-capable images, which reads
+  the image's metadata and asserts the matching contract: DinD daemon startup,
+  nested builds and Compose for `node-bun-docker`, and the forwarded host
+  socket plus unprivileged `devcontainer up` for `vibecode-essential`.
 
 The workflow also runs on a schedule, `0 */4 * * *` — every four hours UTC.
 Scheduled legs build with `pull` and `no-cache` so the published images pick up

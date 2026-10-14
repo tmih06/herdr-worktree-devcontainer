@@ -273,9 +273,12 @@ jobs:
             --build-arg BASE_IMAGE=wtdc-parent:${{ matrix.name }} \
             ${{ matrix.dir }}
 
-  # Exercise DinD on native runners, including PRs, without publishing test images.
+  # Exercise the Docker images on native runners, including PRs, without
+  # publishing test images. dind-smoke.sh reads each image's metadata and
+  # asserts whichever contract it declares — DinD for node-bun-docker,
+  # host-socket docker-outside-of-docker for vibecode-essential.
   verify-dind:
-    name: Docker-in-Docker ${{ matrix.platform }}
+    name: Docker modes ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -310,8 +313,7 @@ jobs:
       # it needs client tools only.
       - name: Verify vibecode-essential toolset
         run: docker run --rm --entrypoint /usr/local/share/vibecode-essential-smoke.sh wtdc-vibecode-essential:verify
-      - name: Verify bundled Docker-in-Docker
-        timeout-minutes: 15
+      - name: Verify bundled Docker modes
         run: |
           bash tests/dind-smoke.sh wtdc-node-bun-docker:verify
           bash tests/dind-smoke.sh wtdc-vibecode-essential:verify

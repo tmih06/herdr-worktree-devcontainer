@@ -1,12 +1,15 @@
-# Batteries-included coding environment with the DinD setup of node-bun-docker.
+# Batteries-included coding environment with Docker both ways: mounting the
+# host socket (the default under the Dev Container CLI, via devcontainer.metadata
+# below) selects docker-outside-of-docker; without it the entrypoint falls back
+# to the Docker-in-Docker daemon for plain `docker run --privileged` use.
 #
 # FROM base, not node-bun-docker: the parent ships NodeSource nodejs and
 # bun@latest, and this image replaces both with pinned versions. Docker layers
 # only ever add bytes — a purge in a later layer whiteouts files but the pulled
 # image still carries them — so inheriting them would bake ~320MB of dead
-# NodeSource + Bun layers into every pull. The DinD stack, cloudflared, gh, and
-# dev-group wiring are replicated here instead; keep them in step with
-# images/node-bun-docker/Dockerfile.
+# NodeSource + Bun layers into every pull. The Docker stack, cloudflared, gh,
+# and dev-group wiring are replicated here instead; the daemon branch of
+# docker-init.sh still mirrors images/node-bun-docker/docker-init.sh.
 ARG BASE_IMAGE=ghcr.io/tmih06/herdr-devcontainer-base:latest
 FROM ${BASE_IMAGE}
 
@@ -28,7 +31,10 @@ RUN set -eux; \
       bash git make curl jq gnupg ca-certificates coreutils findutils grep sed gawk \
       procps util-linux iproute2 tar gzip unzip xz-utils sudo \
       # nvim needs fd for Telescope file picking; Ubuntu names the binary fdfind.
-      fd-find; \
+      # socat proxies the host docker socket when its gid matches neither root
+      # nor the docker group — the upstream docker-outside-of-docker feature's
+      # fallback, replicated here.
+      fd-find socat; \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd; \
     install -m 0755 -d /etc/apt/keyrings; \
     # Repos copied from images/node-bun-docker: Cloudflare, Docker, GitHub CLI.
@@ -83,12 +89,22 @@ RUN /usr/local/share/vibecode-essential/compress-binaries.sh
 
 COPY --chmod=0755 smoke.sh /usr/local/share/vibecode-essential-smoke.sh
 COPY --chmod=0755 docker-init.sh /usr/local/share/docker-init.sh
+# docker.sock is a symlink to the host-socket mount point, baked in because the
+# CLI runs the entrypoint as dev, who cannot write /var/run. With no host
+# socket mounted the link is dead and the init's DinD branch unlinks it before
+# dockerd binds. No placeholder at docker-host.sock: a file there would make
+# the entrypoint pick the outside-of-docker path against a non-socket.
+RUN ln -s /var/run/docker-host.sock /var/run/docker.sock
 
-# Keep in sync with images/node-bun-docker/Dockerfile — this image replicates
-# its DinD contract rather than inheriting it.
-LABEL devcontainer.metadata='[{"privileged":true,"init":true,"entrypoint":"/usr/local/share/docker-init.sh","mounts":[{"source":"wtdc-dind-docker-${devcontainerId}","target":"/var/lib/docker","type":"volume"},{"source":"wtdc-dind-containerd-${devcontainerId}","target":"/var/lib/containerd","type":"volume"}]}]'
 
-VOLUME ["/var/lib/docker", "/var/lib/containerd"]
+# DooD parity with ghcr.io/devcontainers/features/docker-outside-of-docker:
+# the CLI mounts the host socket and replaces the image entrypoint with
+# docker-init.sh, which proxies or gid-matches it for dev — no feature build,
+# no privileged mode. DinD still works for plain `docker run --privileged`,
+# which is why VOLUME declarations stay out: anonymous volumes would be
+# created with nothing in them under the CLI.
+LABEL devcontainer.metadata='[{"id":"ghcr.io/devcontainers/features/docker-outside-of-docker:1","securityOpt":["label=disable"],"entrypoint":"/usr/local/share/docker-init.sh","mounts":[{"source":"/var/run/docker.sock","target":"/var/run/docker-host.sock","type":"bind"}],"customizations":{"vscode":{"extensions":["ms-azuretools.vscode-containers"],"settings":{"github.copilot.chat.codeGeneration.instructions":[{"text":"This dev container includes the Docker CLI (`docker`) pre-installed and available on the `PATH` for running and managing containers using the Docker daemon on the host machine."}]}}}}]'
+
 ENTRYPOINT ["/usr/local/share/docker-init.sh"]
 CMD ["sleep", "infinity"]
 
