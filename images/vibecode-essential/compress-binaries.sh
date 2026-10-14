@@ -59,9 +59,9 @@ pack /usr/local/bin/node --version
 
 # npm-delivered binaries (hardlinked siblings are repacked then relinked below)
 pack /usr/local/lib/node_modules/bun/bin/bun.exe --version
-# opencode2 has no packaged `.exe` twin to relink: its main package ships only
-# a node shim, and the bun-compiled ELF lives in the platform package.
-pack /usr/local/lib/node_modules/opencode2/node_modules/opencode2-linux-*/bin/opencode2 --version
+# opencode-ai ships the ELF as bin/opencode.exe inside the main package —
+# the same shape as claude.exe below.
+pack /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe --version
 pack /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe --version
 pack /usr/local/lib/node_modules/wrangler/node_modules/workerd/bin/workerd --version
 find /usr/local/lib/node_modules/@openai -name 'codex*' -type f -path '*bin*' \

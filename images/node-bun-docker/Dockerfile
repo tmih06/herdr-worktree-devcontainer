@@ -40,6 +40,9 @@ COPY --chmod=0755 docker-init.sh /usr/local/share/docker-init.sh
 
 # The CLI overrides Docker's entrypoint, so also record startup in image metadata.
 # Storage is scoped to each dev container and kept outside its writable layer.
+# vibecode-essential keeps a dual-mode copy of docker-init.sh — it shares the
+# host socket when one is mounted instead of only starting a nested daemon —
+# so its LABEL differs; keep the start_daemon() logic itself in step with it.
 LABEL devcontainer.metadata='[{"privileged":true,"init":true,"entrypoint":"/usr/local/share/docker-init.sh","mounts":[{"source":"wtdc-dind-docker-${devcontainerId}","target":"/var/lib/docker","type":"volume"},{"source":"wtdc-dind-containerd-${devcontainerId}","target":"/var/lib/containerd","type":"volume"}]}]'
 
 VOLUME ["/var/lib/docker", "/var/lib/containerd"]
