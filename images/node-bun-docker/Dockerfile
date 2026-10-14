@@ -36,6 +36,8 @@ RUN set -eux; \
     printf '\n# Load approved .envrc files in interactive Bash shells.\neval "$(direnv hook bash)"\n' >> "/home/${USER_NAME}/.bashrc"; \
     rm -rf /var/lib/apt/lists/*
 
+COPY --chmod=0755 docker-init.sh /usr/local/share/docker-init.sh
+
 # The CLI overrides Docker's entrypoint, so also record startup in image metadata.
 # Storage is scoped to each dev container and kept outside its writable layer.
 # vibecode-essential keeps a dual-mode copy of docker-init.sh — it shares the
