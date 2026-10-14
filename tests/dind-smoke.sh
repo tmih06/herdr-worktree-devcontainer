@@ -77,8 +77,14 @@ check_nested_docker() {
   '
 }
 
-# Plain Docker uses the image entrypoint and keeps the workspace command as dev.
-docker run -d --privileged --init --name "$raw_container" "$image" >/dev/null
+# Plain Docker uses the image entrypoint and keeps the workspace command as
+# dev. Named storage volumes are explicit rather than inherited: the
+# outside-of-docker image declares no VOLUME, and a nested dockerd cannot
+# overlay-mount on the container's own overlayfs rootfs.
+docker run -d --privileged --init --name "$raw_container" \
+  --mount "type=volume,source=wtdc-dind-docker-smoke-${raw_container#wtdc-dind-},target=/var/lib/docker" \
+  --mount "type=volume,source=wtdc-dind-containerd-smoke-${raw_container#wtdc-dind-},target=/var/lib/containerd" \
+  "$image" >/dev/null
 wait_for_docker "$raw_container"
 check_nested_docker "$raw_container"
 docker restart "$raw_container" >/dev/null
