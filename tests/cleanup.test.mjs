@@ -46,7 +46,17 @@ if (process.env.CLEANUP_DAEMON_FAIL === "1") {
 }
 if (args[0] === "ps") {
   const filter = args[args.indexOf("--filter") + 1] || "";
-  console.log(containers.filter(id => filter.startsWith("id=") ? filter === "id=" + id : id !== process.env.CLEANUP_UNLABELLED_ID).join("\\n"));
+  const labels = JSON.parse(process.env.CLEANUP_LABELS || "{}");
+  const selected = containers.filter(id => {
+    if (filter.startsWith("id=")) return filter === "id=" + id;
+    if (id === process.env.CLEANUP_UNLABELLED_ID) return false;
+    const values = labels[id] || {"devcontainer.local_folder": ${JSON.stringify(checkout)}};
+    const [key, ...value] = filter.slice("label=".length).split("=");
+    return value.length ? values[key] === value.join("=") : key in values;
+  });
+  const format = args[args.indexOf("--format") + 1] || "";
+  const label = format.match(/\\.Label "([^"]+)"/)?.[1];
+  console.log(selected.map(id => label ? (labels[id] || {"devcontainer.local_folder": ${JSON.stringify(checkout)}})[label] : id).join("\\n"));
 } else if (args[0] === "rm") {
   const id = args.at(-1);
   if (process.env.CLEANUP_CRASH_ON_RM === "1") {
@@ -380,5 +390,64 @@ test("a concurrently removed container is successful cleanup and remains retryab
   assert.equal(f.entry(), undefined);
   const again = f.run(["hook-removed"]);
   assert.equal(again.status, 0, again.stderr);
+  assert.equal(f.entry(), undefined);
+});
+
+test("cleanup discovers untracked child containers and legacy Compose siblings", (t) => {
+  const f = fixture(t, {
+    tracked: false,
+    containers: ["relay", "postgres", "legacy", "unrelated"],
+    volumes: ["user-data"],
+  });
+  const res = f.run(["cleanup"], {
+    CLEANUP_LABELS: JSON.stringify({
+      relay: { "wtdc.owner.workspace": f.checkout },
+      postgres: { "wtdc.owner.workspace": f.checkout },
+      legacy: { "com.docker.compose.project.working_dir": f.checkout },
+      unrelated: {},
+    }),
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(f.containers(), ["unrelated"]);
+  assert.deepEqual(f.volumes(), ["user-data"]);
+  assert.equal(f.entry(), undefined);
+});
+
+test("startup preserves live untracked folders and Compose-only projects", (t) => {
+  const f = fixture(t, { tracked: false, containers: ["live", "compose-only", "unrelated"] });
+  fs.mkdirSync(f.checkout);
+  const res = f.run(["startup"], {
+    CLEANUP_LABELS: JSON.stringify({
+      live: { "wtdc.owner.workspace": f.checkout },
+      "compose-only": { "com.docker.compose.project.working_dir": f.checkout + "-missing" },
+      unrelated: {},
+    }),
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(f.containers(), ["live", "compose-only", "unrelated"]);
+});
+
+test("untracked child cleanup honors keep-container", (t) => {
+  const f = fixture(t, { tracked: false, containers: ["child"] });
+  const res = f.run(["cleanup"], {
+    WTDC_KEEP_CONTAINER: "1",
+    CLEANUP_LABELS: JSON.stringify({ child: { "wtdc.owner.workspace": f.checkout } }),
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(f.containers(), ["child"]);
+});
+
+test("failed untracked child removal is journalled and retried on startup", (t) => {
+  const f = fixture(t, { tracked: false, containers: ["child"] });
+  const labels = {
+    CLEANUP_LABELS: JSON.stringify({ child: { "wtdc.owner.workspace": f.checkout } }),
+  };
+  const failed = f.run(["cleanup"], { ...labels, CLEANUP_RM_FAIL: "child" });
+  assert.notEqual(failed.status, 0);
+  assert.equal(f.entry().cleanup_pending, true);
+  assert.deepEqual(f.containers(), ["child"]);
+  const retry = f.run(["startup"], labels);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.deepEqual(f.containers(), []);
   assert.equal(f.entry(), undefined);
 });

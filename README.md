@@ -47,16 +47,16 @@ herdr plugin action invoke worktree-devcontainer.reopen-container
 
 Use the same command with any action below:
 
-| Action              | Result                                                                         |
-| ------------------- | ------------------------------------------------------------------------------ |
-| `reopen-container`  | Choose a config and start or reuse its container in a new tab.                 |
-| `rebuild-container` | Rebuild and reopen, preserving named volumes.                                  |
-| `reopen-host`       | Switch to host terminals and stop the container, keeping its data.             |
-| `provision`         | Set up a container for the focused checkout.                                   |
-| `status`            | Show tracked containers and whether they are running.                          |
-| `teardown`          | Destroy the container and its owned Docker-in-Docker storage.                  |
-| `remove-worktree`   | Clean up containers and owned storage, then remove the Git worktree.           |
-| `cleanup`           | Retry interrupted cleanup and reclaim tracked resources for deleted worktrees. |
+| Action              | Result                                                                       |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `reopen-container`  | Choose a config and start or reuse its container in a new tab.               |
+| `rebuild-container` | Rebuild and reopen, preserving named volumes.                                |
+| `reopen-host`       | Switch to host terminals and stop the container, keeping its data.           |
+| `provision`         | Set up a container for the focused checkout.                                 |
+| `status`            | Show tracked containers and whether they are running.                        |
+| `teardown`          | Destroy the container and its owned Docker-in-Docker storage.                |
+| `remove-worktree`   | Clean up containers and owned storage, then remove the Git worktree.         |
+| `cleanup`           | Retry interrupted cleanup and reclaim owned resources for deleted worktrees. |
 
 In the dialog, `y` or `Enter` accepts and `n` or `Esc` declines. Use `↑`/`↓` to
 edit the image, **c** to switch between the main checkout's config and this
@@ -126,6 +126,14 @@ This installs a Git launcher at `~/.local/bin/git`; that directory must precede
 the original Git executable on the Herdr server's `PATH`. Without it, Herdr's
 removal hook runs after Git has deleted the checkout. The plugin also retries
 pending cleanup on startup; use `cleanup` to retry immediately.
+
+Startup and `cleanup` also discover untracked containers through
+`devcontainer.local_folder` and `wtdc.owner.workspace` labels when the checkout
+directory is gone. Teardown removes those containers plus Compose containers
+whose working directory exactly matches the checkout, preserving user-defined
+volumes. Existing untracked folders, shared helpers without ownership labels,
+and unlabelled build containers are not swept. `WTDC_KEEP_CONTAINER=1` disables
+automatic orphan discovery.
 
 Cleanup destroys containers and their owned volumes, never images. Cached
 feature builds and uid-adjusted images stay on disk as shared caches; reclaim

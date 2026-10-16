@@ -564,12 +564,23 @@ function startup() {
   info(`dev containers tracked: ${state.list().length}, running: ${running}`);
 }
 
+/**
+ * Retry journalled teardown, then discover untracked containers by ownership.
+ * Only missing checkout directories qualify without state: an existing folder
+ * may be a valid non-Git workspace. Keep-container disables orphan discovery.
+ */
 function cleanup(config = loadConfig()) {
-  for (const entry of state.list()) {
+  const entries = state.list();
+  for (const entry of entries) {
     if (config.WTDC_KEEP_CONTAINER === "1" && !entry.cleanup_force) continue;
     if (entry.cleanup_pending || checkoutMissing(entry.checkout_path, entry.checkout_kind)) {
       teardown(entry.checkout_path, Boolean(entry.cleanup_force));
     }
+  }
+  if (config.WTDC_KEEP_CONTAINER === "1") return;
+  const tracked = new Set(entries.map((entry) => entry.checkout_path));
+  for (const checkout of dc.containerWorktrees()) {
+    if (!tracked.has(checkout) && checkoutMissing(checkout, "folder")) teardown(checkout);
   }
 }
 
