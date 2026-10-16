@@ -5,14 +5,18 @@ makes the Dev Container CLI derive a **per-workspace** image, so every new
 worktree pays for an image build — roughly 25s even with every Docker layer
 cached.
 
-An image with **no features** is just `docker run`. So these images carry
-what a container needs to be pleasant to work in, without a build step:
+An image with **no features** needs no feature build: the CLI runs it as-is,
+except on hosts whose uid differs from the container user's — there it builds
+one uid-remapped copy, which the plugin caches and shares across worktrees as
+described below. So these images carry what a container needs to be pleasant to
+work in, without a per-worktree build:
 
 - `herdr`, so nothing is downloaded per container
 - a `dev` user at uid 1000 owning `/workspaces` (not tied to any editor)
 
-With one of these, the generated config has no `features`, the CLI builds
-nothing, and a provision is a `docker run` plus a container start.
+With one of these, the generated config has no `features`, and a provision is a
+`docker run` plus a container start — the uid remap above is the only build the
+CLI can still do, and it happens once per host uid rather than per worktree.
 
 ## Platforms
 
@@ -73,9 +77,10 @@ WTDC_TEMPLATE=node
 WTDC_IMAGE_REMOTE_USER=dev
 ```
 
-The plugin pulls missing images and confirmed published updates before setup.
-Current local images are reused; existing containers need a rebuild to use an
-updated image.
+The plugin pulls an image only when it is missing locally; an installed tag is
+reused as-is and never re-pulled against the registry, even though CI republishes
+`:latest` on a schedule. To update, run `docker pull <image>` yourself, then
+rebuild the container.
 
 `node-bun-docker` includes Docker Engine, its client, Compose, Buildx, and
 `cloudflared` for Cloudflare Tunnel.
@@ -172,7 +177,16 @@ refuses to remap a uid that another user already holds, and `ubuntu:24.04` ships
 `ubuntu` user at 1000 — so `base` deletes it and gives `dev` that uid, which makes the
 remap a genuine no-op on a uid-1000 host and still correct elsewhere. The image carries
 `devcontainer.remote.uid` and `devcontainer.remote.user` labels so the plugin can skip
-building a useless `-uid` copy of the image.
+building a useless `-uid` copy of the image when the host uid already matches.
+
+On hosts where it does not match, the CLI's `vsc-…-uid` build still happens — for
+featureless configs too — but the plugin tags the result as a
+`wtdc-features-…-uid` image keyed by the base image id, the remote/container user,
+and the host uid/gid. The first provision on such a host pays for the build; every
+other worktree using the same base image and user reuses it. These caches are never
+pruned automatically — teardown and cleanup remove containers and owned volumes,
+not images — so reclaim them with `docker rmi` or `docker image prune` when the
+underlying image changes.
 
 ## `vibecode-essential`
 
@@ -203,7 +217,7 @@ What it adds on top:
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Node.js 24.18.0          | `gh` (GitHub's apt repository)                                                                                                                                                                                          |
 | Bun 1.4.2                | `playwright` + bundled Chromium (`playwright@latest`)                                                                                                                                                                   |
-| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, `opencode`                                                                                                                                                          |
+| OpenTofu (`tofu`) 1.12.0 | coding-agent CLIs: `omp`, `rtk`, `codex`, `claude`, OpenCode 2 beta (`opencode`)                                                                                                                                 |
 | Gitleaks 8.30.1          | codebase-memory MCP servers (`codebase-memory-mcp`, `codebase-memory-session-mcp`)                                                                                                                                      |
 | typos 1.35.5             | terminal tools: `lazygitrs`, `lazydocker`, `btop`                                                                                                                                                                       |
 |                          | CI, telemetry, and Workers CLIs: `wakatime-cli`, `circleci`, `wrangler`                                                                                                                                                 |
@@ -231,9 +245,7 @@ treesitter parsers are compiled at build time, after which the compiler is
 removed from the same layer. Large self-contained binaries (tofu, cbm,
 node, bun, the Docker engine) are UPX-packed at ~30% of their size, with a
 per-binary verify-and-restore so an incompatible format stays uncompressed.
-bun-compiled binaries (omp, opencode, claude) are skipped: their bundled
-assets are read lazily from the binary's own file image, which UPX
-invalidates — the binary still runs but asset reads return garbage.
+bun-compiled binaries (omp, claude) are skipped: their bundled
 
 The image carries its own check at
 `/usr/local/share/vibecode-essential-smoke.sh`: it asserts the pinned versions,

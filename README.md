@@ -63,10 +63,17 @@ edit the image, **c** to switch between the main checkout's config and this
 worktree's config, and **r** to rebuild. Config selection is remembered per checkout.
 Editing the image keeps the config's features.
 
-Before a new setup or rebuild, the plugin pulls a missing image or a confirmed
-published update. A current local image is reused; if the registry check fails,
-an existing image remains usable. The dialog shows local size on disk for present
-images and compressed download size for missing images.
+Before a new setup or rebuild, the plugin pulls an image that is missing locally
+and reuses one that is present without checking for a newer startup image,
+so daily republished `:latest` tags do not churn your local
+images. To pick up a newer published image, pull it yourself and rebuild:
+
+```sh
+docker pull ghcr.io/tmih06/herdr-devcontainer-node:latest
+```
+
+then use `rebuild-container` (or **r** in the dialog). The dialog shows local
+size on disk for present images and compressed download size for missing images.
 
 New panes follow the checkout's selected container or host mode. Reopening keeps
 existing panes; rebuild after changing the config or its source. Returning to the
@@ -81,9 +88,12 @@ or set `WTDC_CONFIG_SOURCE=worktree` as the default.
 
 Your image, features, user, mounts, and lifecycle commands control the container.
 The plugin waits for `postCreateCommand` and uses the branch as the hostname unless
-you set one in `runArgs`. Prebuilt images avoid feature builds; matching local
-feature builds and UID-adjusted images can be reused across worktrees. See the
-[image reference](images/README.md) for available toolchains and Docker-in-Docker.
+you set one in `runArgs`. Prebuilt images avoid feature builds, and matching local
+feature builds are reused across worktrees. When the container user's uid differs
+from the host's, the CLI also builds a uid-adjusted image — even for configs with
+no features — and the plugin caches one per base image, user, and host uid/gid,
+shared across worktrees. See the [image reference](images/README.md) for
+available toolchains and Docker-in-Docker.
 
 Herdr copies [the default settings](config/config.default.env) into its plugin
 config directory on first use. Edit that copy; commonly used settings are:
@@ -116,6 +126,10 @@ This installs a Git launcher at `~/.local/bin/git`; that directory must precede
 the original Git executable on the Herdr server's `PATH`. Without it, Herdr's
 removal hook runs after Git has deleted the checkout. The plugin also retries
 pending cleanup on startup; use `cleanup` to retry immediately.
+
+Cleanup destroys containers and their owned volumes, never images. Cached
+feature builds and uid-adjusted images stay on disk as shared caches; reclaim
+them yourself with `docker rmi` or `docker image prune`.
 
 ## Development
 

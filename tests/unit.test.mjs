@@ -205,6 +205,25 @@ test("buildMerged: preserves lifecycle commands and waits for postCreateCommand"
   assert.equal(merged.waitFor, "postCreateCommand");
 });
 
+test("buildMerged: build paths stay relative to the source config after relocation", () => {
+  const dir = tmp();
+  const source = path.join(dir, ".devcontainer");
+  fs.mkdirSync(source);
+  const dockerfile = path.join(source, "Dockerfile");
+  fs.writeFileSync(dockerfile, "FROM alpine:3\n");
+  const src = path.join(source, "devcontainer.json");
+  fs.writeFileSync(src, JSON.stringify({ build: { dockerfile: "Dockerfile" } }));
+  const out = path.join(dir, "merged", "devcontainer.json");
+  fs.mkdirSync(path.dirname(out));
+
+  buildMerged(src, out, {});
+
+  const merged = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(merged.build.context, source);
+  assert.equal(merged.build.dockerfile, dockerfile);
+  assert.ok(fs.existsSync(merged.build.dockerfile));
+});
+
 test("buildMerged: an array postCreateCommand keeps its argv form", () => {
   const dir = tmp();
   const src = path.join(dir, "devcontainer.json");
@@ -350,25 +369,29 @@ test("up uses the build timeout and returns CLI failures", () => {
     `#!/bin/sh\ncase "$WTDC_TEST_DEVCONTAINER_MODE" in\n  fail) exit 23 ;;\n  slow) exec sleep 2 ;;\nesac\nprintf '{"containerId":"container-id","remoteWorkspaceFolder":"/workspace","remoteUser":"dev"}'\n`,
     { mode: 0o755 },
   );
+  // `up` re-reads the merged config to decide whether a shared UID image can
+  // stand in; an image that cannot exist anywhere keeps that lookup empty.
+  const merged = path.join(dir, "merged.json");
+  fs.writeFileSync(merged, '{"image":"wtdc-unit-test-absent:latest"}');
   process.env.PATH = `${dir}${path.delimiter}${oldPath || ""}`;
   process.env.WTDC_SHARE_HERDR_BIN = "0";
 
   try {
     process.env.WTDC_TEST_DEVCONTAINER_MODE = "fail";
     assert.throws(
-      () => up(dir, "merged.json", {}),
+      () => up(dir, merged, {}),
       (err) => err.code === 23,
     );
 
     process.env.WTDC_TEST_DEVCONTAINER_MODE = "slow";
     assert.throws(
-      () => up(dir, "merged.json", { WTDC_BUILD_TIMEOUT: "0.05" }),
+      () => up(dir, merged, { WTDC_BUILD_TIMEOUT: "0.05" }),
       (err) => err.name === "CommandError" && err.code === null && /failed/.test(err.message),
     );
 
     process.env.WTDC_TEST_DEVCONTAINER_MODE = "success";
     let callbackId = "";
-    const result = up(dir, "merged.json", {}, (id) => {
+    const result = up(dir, merged, {}, (id) => {
       callbackId = id;
     });
     assert.equal(result.containerId, "container-id");

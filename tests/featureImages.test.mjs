@@ -34,12 +34,19 @@ const imageId=ref=>state.images[ref]||(Object.values(state.images).includes(ref)
 if(args[0]==="image"&&args[1]==="inspect"){
  if(state.slowInspect){fs.appendFileSync(path.join(path.dirname(file),"inspect-pids"),process.pid+"\\n");Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);}
  if(state.inspectError){console.error("Cannot connect to the Docker daemon");process.exit(1);}
- const ref=args[2]; const id=imageId(ref);
- if(!id){console.error("No such image: "+ref);process.exit(1);}
  const format=args[args.indexOf("--format")+1];
+ // Callers pass the ref either before or after the --format flag.
+ const ref=[...args].reverse().find(a=>!a.startsWith("-")&&!a.startsWith("{"));
+ const id=imageId(ref);
+ if(!id){console.error("No such image: "+ref);process.exit(1);}
  if(format==="{{.Id}}")console.log(id);
+ else if(format.startsWith("{{.Size}}"))console.log("1048576|[]|"+id);
  else if(format==="{{.Os}}/{{.Architecture}}")console.log("linux/"+process.arch.replace("x64","amd64"));
  process.exit(0);
+}
+if(args[0]==="pull"){
+ const pulled=imageId(args[1])||("sha256:"+createHash("sha256").update(args[1]).digest("hex"));
+ state.images[args[1]]=pulled;state.events.push({command:"pull",image:args[1]});save();process.exit(0);
 }
 if(args[0]==="inspect"){
  const container=state.containers[args.at(-1)];
@@ -115,12 +122,27 @@ process.exit(1);
     );
     return folder;
   }
+  // Featureless configs still need UID adjustment when host and image differ;
+  // these checkouts exercise sharing that startup image without a feature build.
+  function plain(name, config = {}) {
+    const folder = path.join(dir, name);
+    fs.mkdirSync(path.join(folder, ".devcontainer"), { recursive: true });
+    fs.writeFileSync(
+      path.join(folder, ".devcontainer/devcontainer.json"),
+      JSON.stringify({ image: "base:latest", remoteUser: "dev", ...config }),
+    );
+    return folder;
+  }
+  // Mirror mergedPathFor's output-directory creation before invoking the public
+  // merge/start path; return its descriptor only when feature staging creates one.
   function start(folder) {
     const out = path.join(dir, "merged", path.basename(folder), "devcontainer.json");
+    fs.mkdirSync(path.dirname(out), { recursive: true });
     const code = `import fs from "node:fs";
       import {buildMerged,up} from ${JSON.stringify(path.join(root, "lib/wtdc/devcontainer.mjs"))};
       buildMerged(${JSON.stringify(path.join(folder, ".devcontainer/devcontainer.json"))},${JSON.stringify(out)},${JSON.stringify(config)},${JSON.stringify(folder)});
-      const descriptor=JSON.parse(fs.readFileSync(${JSON.stringify(path.join(path.dirname(out), "feature-build.json"))},"utf8"));
+      const descriptorFile=${JSON.stringify(path.join(path.dirname(out), "feature-build.json"))};
+      const descriptor=fs.existsSync(descriptorFile)?JSON.parse(fs.readFileSync(descriptorFile,"utf8")):null;
       const result=up(${JSON.stringify(folder)},${JSON.stringify(out)},${JSON.stringify(config)});
       console.log(JSON.stringify({descriptor,result}));`;
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
@@ -187,7 +209,7 @@ sys.stdout.buffer.write(output)
       .at(-1)
       .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
   }
-  return { dir, checkout, start, read, write, prompt };
+  return { dir, checkout, plain, start, read, write, prompt };
 }
 
 test("the dialog reports a shared feature and UID cache hit without building or starting anything", (t) => {
@@ -342,6 +364,84 @@ test("identical local features share one feature build and one UID-adjusted imag
   assert.equal(starts[0].remap, true);
   assert.equal(starts[1].remap, false);
   assert.equal(starts[0].imageId, starts[1].imageId);
+});
+
+test("a plain image shares one UID-adjusted image across worktrees", (t) => {
+  // No features, no build block: the CLI still runs the image through its
+  // `vsc-…-uid` remap by default, once per worktree. Provisioning pays for that
+  // copy the first time and then runs the published tag straight — the second
+  // worktree's config points at the cached UID image with the remap switched off.
+  const f = fixture(t);
+  const first = f.start(f.plain("plain-first"));
+  const second = f.start(f.plain("plain-second"));
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(first.parsed.descriptor, null, "a plain config has no feature build");
+  const starts = f.read().events.filter((e) => e.command === "up");
+  assert.equal(starts.length, 2);
+  assert.equal(starts[0].remap, true, "the first worktree builds the UID image");
+  assert.equal(starts[1].remap, false, "the second runs the published UID tag");
+  assert.equal(starts[1].config.updateRemoteUserUID, false);
+  assert.match(starts[1].config.image, /^wtdc-features-[a-f0-9]{24}-uid:latest$/);
+  assert.equal(starts[0].imageId, starts[1].imageId);
+  assert.equal(
+    f.read().events.filter((e) => e.command === "build").length,
+    0,
+    "no feature image is built",
+  );
+});
+
+test("an explicit base image update invalidates the shared UID image", (t) => {
+  // Installed tags no longer self-refresh, so `base:latest` moving is always the
+  // user's own `docker pull`. The UID tag is keyed on the base image's id: the
+  // next worktree must remap the *new* image rather than reuse the stale copy,
+  // and the old tag is left alone — cache cleanup is the user's `docker rmi`.
+  const f = fixture(t);
+  assert.equal(f.start(f.plain("uid-before")).status, 0);
+  const state = f.read();
+  state.images["base:latest"] = `sha256:${"b".repeat(64)}`;
+  f.write(state);
+  const third = f.start(f.plain("uid-after"));
+  assert.equal(third.status, 0, third.stderr);
+  const starts = f.read().events.filter((e) => e.command === "up");
+  assert.equal(starts.at(-1).remap, true, "the stale UID image is not reused");
+  assert.notEqual(starts.at(-1).imageId, starts[0].imageId);
+  const fourth = f.start(f.plain("uid-reseated"));
+  assert.equal(fourth.status, 0, fourth.stderr);
+  const after = f.read().events.filter((e) => e.command === "up");
+  assert.equal(after.at(-1).remap, false, "the next worktree reuses the new UID image");
+  assert.equal(
+    f.read().events.filter((e) => e.command === "pull").length,
+    0,
+    "the updated tag is used as it stands, not re-pulled",
+  );
+  const uidTags = new Set(
+    f
+      .read()
+      .events.filter((e) => e.command === "tag")
+      .map((e) => e.image),
+  );
+  assert.equal(uidTags.size, 2, "both UID images are kept, keyed to their bases");
+});
+
+test("a plain config with the UID update disabled builds and caches nothing", (t) => {
+  const f = fixture(t);
+  const first = f.start(f.plain("uid-off", { updateRemoteUserUID: false }));
+  const second = f.start(f.plain("uid-off-again", { updateRemoteUserUID: false }));
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(second.status, 0, second.stderr);
+  const events = f.read().events;
+  assert.deepEqual(
+    events.filter((e) => e.command === "tag"),
+    [],
+    "an explicit policy publishes no shared image",
+  );
+  const starts = events.filter((e) => e.command === "up");
+  assert.deepEqual(
+    starts.map((e) => e.remap),
+    [false, false],
+  );
+  assert.equal(starts[0].imageId, baseId, "the base image runs unmodified");
 });
 
 test("feature edits, option changes and a changed base image invalidate the shared image", (t) => {

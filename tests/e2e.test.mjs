@@ -289,6 +289,9 @@ test("provision builds the container and records it for the dispatcher", () => {
   assert.equal(entry.remote_user, "devuser");
   assert.equal(entry.checkout_path, WT);
   assert.equal(entry.label, "demo");
+  // An installed image is reused as it stands: `docker pull` stays the user's
+  // explicit update path, never something provisioning invokes on its own.
+  assert.doesNotMatch(calls("docker"), /^pull /m);
   assert.ok(entry.container_name.startsWith("herdr-"), "container should be renamed");
 });
 

@@ -253,11 +253,8 @@ function provision(checkout, workspaceId = "", labelArg = "") {
     die(`could not merge ${src} into ${merged}: ${err.message}`);
   }
 
-  // Whether this provision builds an image is a property of the *merged* config, not of
-  // the plugin's settings: the CLI derives a per-workspace image when the config declares
-  // features, and does nothing extra when it declares none. Warning on "no prebuilt image
-  // configured" got this backwards — with no template set that was every provision,
-  // including the ones that are a `docker run`, so it cried wolf on the fast path.
+  // Features require a derived image. A plain prebuilt image may still need one
+  // shared UID-adjustment build when its user differs from the host; `up` caches it.
   const derived = Object.keys(JSON.parse(fs.readFileSync(merged, "utf8")).features || {});
   if (derived.length) {
     warn(
@@ -294,7 +291,7 @@ function provision(checkout, workspaceId = "", labelArg = "") {
   // volume names: a failed rebuild must remain recoverable without losing DinD data.
   state.setPreference(checkout, { mode: "host", config_source: config.WTDC_CONFIG_SOURCE });
 
-  step("Building and starting the container (this can take a while)");
+  step("Starting the container (building missing feature or UID images if needed)");
   emit("up", phaseStart("up") * 100);
   let up;
   try {

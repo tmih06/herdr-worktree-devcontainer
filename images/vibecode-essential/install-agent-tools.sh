@@ -439,15 +439,15 @@ chmod 0755 /usr/local/bin/codebase-memory-session-mcp
 
 # Agent CLIs whose official install is npm. Each ships per-platform binaries
 # through optionalDependencies, so the global install resolves amd64/arm64
-# itself: codex (@openai/codex), Claude Code (@anthropic-ai/claude-code),
-# OpenCode (opencode-ai, bin `opencode`), and Cloudflare Workers tooling
-# (wrangler). `opencode2` was pulled by the npm security team as malicious —
-# the name is now a placeholder; do not re-add it.
+# itself: codex (@openai/codex), Claude Code (@anthropic-ai/claude-code), and
+# Cloudflare Workers tooling (wrangler). OpenCode 2 is still beta and its
+# supported curl installer installs the native binary into HOME.
 npm install --global \
   @openai/codex \
   @anthropic-ai/claude-code \
-  opencode-ai \
   wrangler@latest
+HOME="/home/${USER_NAME}" curl -fsSL https://opencode.ai/v2/install | HOME="/home/${USER_NAME}" bash
+ln -sf "/home/${USER_NAME}/.opencode/bin/opencode" /usr/local/bin/opencode
 npm cache clean --force
 
 # Fail the build loudly if anything landed wrong.

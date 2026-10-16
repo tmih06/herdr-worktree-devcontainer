@@ -178,6 +178,9 @@ else console.log("{}");
       assert.equal(result.status, 0, result.stderr);
       return fs.existsSync(env.IMAGE_TEST_PULLED);
     },
+    // The only way an installed tag moves: an explicit `docker pull`. Returns the
+    // pull's exit status so a test can assert the update itself happened.
+    pull: () => spawnSync("docker", ["pull", ref], { env }).status,
     describe: () => {
       const result = spawnSync(process.execPath, [path.join(ROOT, "lib/wtdc/imageInfo.mjs"), ref], {
         env,
@@ -275,11 +278,16 @@ test("without Buildx, a changed host manifest config reports an available update
   assert.match(f.prompt(), /newer image published/);
 });
 
-test("provisioning a stale local tag clears the published-image warning", (t) => {
+test("provisioning reuses a stale local tag until an explicit pull updates it", (t) => {
+  // Daily image churn was the regression: a published update used to trigger a
+  // pull on every provision, which rebuilt every cache keyed on the image. An
+  // installed tag is now stable until the user runs `docker pull` themselves.
   const f = imageFixture(t, "fallback-stale");
   assert.equal(f.describe().state, "update-available");
-  f.provision();
-  assert.equal(f.describe().state, "up-to-date");
+  assert.equal(f.provision(), false, "provisioning does not pull a present image");
+  assert.equal(f.describe().state, "update-available", "the stale tag stays stale");
+  assert.equal(f.pull(), 0);
+  assert.equal(f.describe().state, "up-to-date", "the explicit pull cleared the warning");
   assert.match(f.prompt(), /already pulled, same as published/);
 });
 
@@ -287,6 +295,13 @@ test("provisioning keeps a current local image without pulling", (t) => {
   const f = imageFixture(t, "fallback-current");
   assert.equal(f.provision(), false);
   assert.equal(f.describe().state, "up-to-date");
+});
+
+test("an absent image still gets pulled during provisioning", (t) => {
+  // Local reuse covers images that are here; one that is not must still arrive,
+  // or the CLI fails on startup with nothing to run.
+  const f = imageFixture(t, "absent");
+  assert.equal(f.provision(), true, "a missing image is pulled");
 });
 
 test("an unavailable registry does not force a pull of an existing image", (t) => {
