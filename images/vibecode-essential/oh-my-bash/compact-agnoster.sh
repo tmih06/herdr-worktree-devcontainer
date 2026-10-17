@@ -3,6 +3,7 @@
 # status markers, but omit user@host, display only the directory basename,
 # and shorten worktree/<name> branches to <name>. Hide the branch label when
 # the directory already identifies it; keep other branches and detached IDs.
+# shellcheck disable=SC2034 # read by the theme this file is sourced beside, not here
 AG_NO_CONTEXT=1
 
 # Uses Bash's basename prompt escape so deep workspace paths occupy one segment.

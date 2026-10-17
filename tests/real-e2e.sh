@@ -25,6 +25,7 @@ check() {
   else printf '  \033[31mFAIL\033[0m %s\n       expected: %s\n       actual:   %s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi
 }
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+# shellcheck disable=SC2317 # reached only through the EXIT trap registered below
 cleanup() {
   # The workspace has to go before the worktree: leaving a worktree workspace open with
   # a pane in a container this script is about to delete is untidy in a way that is hard

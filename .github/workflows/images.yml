@@ -122,9 +122,11 @@ jobs:
               end
           ' images/manifest.json)
 
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "derived=$derived" >> "$GITHUB_OUTPUT"
-          echo "nested=$nested" >> "$GITHUB_OUTPUT"
+          {
+            echo "base=$base"
+            echo "derived=$derived"
+            echo "nested=$nested"
+          } >> "$GITHUB_OUTPUT"
 
           echo "base:   $(jq -r .ref <<<"$base")"
           jq -r '.include[] | "derive: \(.ref)  (from \(.base_ref))"' <<<"$derived"

@@ -1,6 +1,6 @@
 name: ci
 
-# Four checks, on every push.
+# Every check that can fail honestly, on every push.
 #
 # Why every push and not just main: this is a plugin that runs as someone edits,
 # so the commit that breaks a check is the one still sitting in someone's
@@ -8,11 +8,14 @@ name: ci
 # is not the one that caused it, by which point the person has moved on. Runs are
 # seconds, with no build or image, so there is nothing to save by waiting.
 #
-# Deliberately not here: tests/real-e2e.sh and tests/prompt-keys.sh. Both drive a
-# real Herdr over a real PTY, which does not exist on a runner, and both exit 0
-# when the tool they need is missing. Adding them would produce a green check that
-# ran nothing, which is worse than no check at all — it looks like coverage and is
-# not. They are the reason to run this repo's tests; they are not CI's.
+# The rule everything below is held to: a check that cannot fail is not a check,
+# because a green tick that ran nothing reads as coverage. That is why
+# tests/real-e2e.sh is not here — it needs a live Herdr, Docker and the
+# devcontainer CLI, and exits 0 when any of them is missing, so on a runner it
+# would report a pass it never earned. tests/prompt-keys.sh drives a real PTY as
+# well, but it stubs the launcher, needs only node and python3, and fails on a
+# failed check, so it runs as the pty job. It is the check that catches the dialog
+# treating a bare ESC — the start of every arrow key — as "declined".
 
 on:
   push:
@@ -29,6 +32,8 @@ permissions:
 env:
   # One place, so a pinned tool version cannot be one number in three workflows.
   GITLEAKS_VERSION: 8.28.0
+  ACTIONLINT_VERSION: 1.7.12
+  TYPOS_VERSION: 1.35.5
 
 jobs:
   # The cheapest thing that can fail, first, and on its own so a formatting slip
@@ -59,6 +64,76 @@ jobs:
       - name: ESLint
         run: npm run lint
 
+  # Every shell script in the repository, not the subset that runs in a container.
+  # images.yml lints its own scripts, but it only runs on images/** and on a daily
+  # timer, so the two test drivers and the oh-my-bash helpers were never linted at
+  # all — and a test driver that shells out is still shell someone has to read.
+  #
+  # Default severity, which includes SC2086 (an unquoted expansion) and the info-level
+  # checks. The two files that trip the linter's own blind spots carry a directive saying
+  # why instead of the severity being lowered for everyone: a function reached only
+  # through an EXIT trap, and a variable read by the theme a file is sourced beside.
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Lint every shell script
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck
+
+  # The workflows themselves. actionlint type-checks expressions against the jobs and
+  # outputs that actually exist, which is where a workflow's failure modes live:
+  # `needs.plan.outputs.base` reads as a string until someone renames the output, and
+  # Actions says nothing until the run.
+  #
+  # It lints each `run:` block with shellcheck when one is on PATH — the least-read shell
+  # here, since it only executes on a runner — so shellcheck is installed rather than
+  # suppressed with -shellcheck=.
+  workflows:
+    name: workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin actionlint
+          actionlint -version
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Lint the workflows
+        run: actionlint
+
+  # Spelling, because what a user of this plugin reads is English: the README, the image
+  # descriptions, the config comments, and the comments in the code that explain why a
+  # decision was made. A misspelling in any of them is a defect nothing else reports.
+  #
+  # The tracked file list, not `typos .`: typos skips hidden files by default, so .github,
+  # .devcontainer and .gitignore would be unchecked — and `--hidden` walks .git too, whose
+  # compressed objects are full of short words that are not misspellings. git ls-files is
+  # exactly the set of files this repository is; a word spelled the way this repository
+  # means it belongs in a _typos.toml at the repository root.
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install typos
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/typos-v${TYPOS_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /usr/local/bin ./typos
+          typos --version
+      - name: Spell-check tracked files
+        run: git ls-files -z | xargs -0 -r typos
+
   tests:
     name: tests
     runs-on: ubuntu-latest
@@ -74,8 +149,35 @@ jobs:
       # so it needs no daemon and no CLI. That is what makes it worth running on
       # every push. The real thing is tests/real-e2e.sh, which cannot run here and
       # is not pretended at.
+      #
+      # tests/repo.test.mjs comes along with it, and is the only file here that
+      # tests relationships instead of behaviour: herdr-plugin.toml against the CLI
+      # that dispatches it, images/manifest.json against the workflow that builds it
+      # and the devcontainer config that names it, README against all three. Drift
+      # there is silent — nothing throws when an action id and its dispatch part
+      # company.
       - name: node --test
         run: npm test
+
+  # The dialog's key handling, driven through a real PTY. This is the part of the suite
+  # that node --test cannot reach: an arrow key arrives as ESC [ B in one write, and the
+  # regression this exists for — a handler that read one byte at a time, leaving a bare
+  # ESC, which the dialog took as "declined" — is invisible to a piped stdin.
+  #
+  # It needs node, python3 and /dev/ptmx, and nothing else: no Herdr (the launcher is
+  # stubbed so that answering "yes" cannot open a real pane), no Docker, no devcontainer
+  # CLI, no npm install. A runner has all three, and the script exits non-zero on a failed
+  # check, so this is a gate rather than a green tick over nothing.
+  pty:
+    name: pty
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Prompt key handling
+        run: bash tests/prompt-keys.sh
 
   # Secrets, before one can be pushed with it in. A hard gate: gitleaks exits
   # non-zero on a finding, so this fails the push rather than annotating it.
