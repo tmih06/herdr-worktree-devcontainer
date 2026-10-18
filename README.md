@@ -143,11 +143,18 @@ them yourself with `docker rmi` or `docker image prune`.
 
 ```sh
 npm ci
-npm test
+npm test                   # unit, stubbed e2e, and the cross-file invariants
 npm run lint
 npm run format:check
 bash tests/prompt-keys.sh  # dialog controls through a real PTY
 bash tests/real-e2e.sh     # requires Docker, devcontainer, and a live Herdr
 ```
+
+CI runs those plus `shellcheck` over every shell script, `actionlint` over the
+workflows, and `typos` over every tracked file; it installs the three of them, so
+this list is what to run locally when they are not. `npm test` includes
+`tests/repo.test.mjs`, which checks the files that have to stay in step with each
+other — the plugin manifest against the CLI, the image manifest against the image
+workflow and this repo's own devcontainer config, the README against both.
 
 After editing `herdr-plugin.toml`, run `herdr server reload-config`.
