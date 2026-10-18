@@ -7,9 +7,12 @@ import { spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-// Model actual container existence, including a daemon outage and individual
+// Model actual resource existence, including daemon outages and individual
 // removal failures. The checkout is already absent when the removal hook runs.
-function fixture(t, { tracked = true, containers = ["tracked"], volumes = [] } = {}) {
+function fixture(
+  t,
+  { tracked = true, containers = ["tracked"], volumes = [], networks = [] } = {},
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtdc-cleanup-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const checkout = path.join(dir, "deleted-worktree");
@@ -22,6 +25,7 @@ function fixture(t, { tracked = true, containers = ["tracked"], volumes = [] } =
   fs.writeFileSync(merged, "{}");
   fs.writeFileSync(dockerFile, JSON.stringify(containers));
   fs.writeFileSync(dockerFile + ".volumes", JSON.stringify(volumes));
+  fs.writeFileSync(dockerFile + ".networks", JSON.stringify(networks));
   fs.writeFileSync(
     stateFile,
     JSON.stringify({
@@ -77,6 +81,26 @@ if (args[0] === "ps") {
   if (args.includes("{{json .Mounts}}")) {
     console.log(JSON.stringify(JSON.parse(fs.readFileSync(file + ".volumes", "utf8")).map(Name => ({Type: "volume", Name, Destination: Name.startsWith("wtdc-dind-containerd-") ? "/var/lib/containerd" : "/var/lib/docker"}))));
   } else console.log("true");
+} else if (args[0] === "network") {
+  const labels = JSON.parse(process.env.CLEANUP_NETWORK_LABELS || "{}");
+  const networks = JSON.parse(fs.readFileSync(file + ".networks", "utf8"));
+  if (args[1] === "ls") {
+    const filter = args[args.indexOf("--filter") + 1];
+    const [key, ...value] = filter.slice("label=".length).split("=");
+    console.log(networks.filter(name => value.length ? labels[name]?.[key] === value.join("=") : key in (labels[name] || {})).join("\\n"));
+  } else if (args[1] === "inspect") {
+    console.log(args.slice(4).map(name => labels[name]?.["wtdc.owner.workspace"] || "").join("\\n"));
+  } else if (args[1] === "rm") {
+    const name = args.at(-1);
+    if (name === process.env.CLEANUP_NETWORK_FAIL || containers.length) {
+      console.error("network has active endpoints");
+      process.exit(1);
+    }
+    fs.writeFileSync(file + ".networks", JSON.stringify(networks.filter(n => n !== name)));
+  }
+} else if (args[0] === "volume" && args[1] === "inspect") {
+  const labels = JSON.parse(process.env.CLEANUP_VOLUME_LABELS || "{}");
+  console.log(args.slice(4).map(name => labels[name]?.["wtdc.owner.workspace"] || "").join("\\n"));
 } else if (args[0] === "volume" && args[1] === "rm") {
   if (process.env.CLEANUP_CRASH_ON_VOLUME === "1") {
     process.kill(process.ppid, "SIGKILL");
@@ -89,7 +113,12 @@ if (args[0] === "ps") {
   }
   fs.writeFileSync(file + ".volumes", JSON.stringify(volumes.filter(v => v !== args.at(-1))));
 } else if (args[0] === "volume" && args[1] === "ls") {
-  console.log(JSON.parse(fs.readFileSync(file + ".volumes", "utf8")).join("\\n"));
+  const labels = JSON.parse(process.env.CLEANUP_VOLUME_LABELS || "{}");
+  const filterIndex = args.indexOf("--filter");
+  const filter = filterIndex < 0 ? "" : args[filterIndex + 1];
+  const [key, ...value] = filter.replace(/^label=/, "").split("=");
+  const volumes = JSON.parse(fs.readFileSync(file + ".volumes", "utf8"));
+  console.log(volumes.filter(name => !filter || (value.length ? labels[name]?.[key] === value.join("=") : key in (labels[name] || {}))).join("\\n"));
 }
 `,
     { mode: 0o755 },
@@ -137,6 +166,7 @@ if (args[0] === "workspace" && args[1] === "get") {
     entry: () => JSON.parse(fs.readFileSync(stateFile, "utf8")).entries[checkout],
     containers: () => JSON.parse(fs.readFileSync(dockerFile, "utf8")),
     volumes: () => JSON.parse(fs.readFileSync(dockerFile + ".volumes", "utf8")),
+    networks: () => JSON.parse(fs.readFileSync(dockerFile + ".networks", "utf8")),
     calls: () =>
       fs
         .readFileSync(dockerFile + ".calls", "utf8")
@@ -232,6 +262,87 @@ test("cleanup removes both DinD volumes and preserves user volumes", (t) => {
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(f.volumes(), ["user-data"]);
   assert.deepEqual(f.containers(), []);
+});
+
+test("cleanup discovers volume-only leftovers and preserves other workspace data", (t) => {
+  const f = fixture(t, {
+    tracked: false,
+    containers: [],
+    volumes: ["owned-postgres", "other-postgres", "shared-cache"],
+  });
+  const result = f.run(["cleanup"], {
+    CLEANUP_VOLUME_LABELS: JSON.stringify({
+      "owned-postgres": { "wtdc.owner.workspace": f.checkout },
+      "other-postgres": { "wtdc.owner.workspace": path.dirname(f.checkout) },
+    }),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.volumes(), ["other-postgres", "shared-cache"]);
+  assert.equal(f.entry(), undefined);
+});
+
+test("labelled volume removal is retryable after its containers disappear", (t) => {
+  const f = fixture(t, { volumes: ["owned-postgres", "shared-cache"] });
+  const labels = {
+    CLEANUP_VOLUME_LABELS: JSON.stringify({
+      "owned-postgres": { "wtdc.owner.workspace": f.checkout },
+    }),
+  };
+  const failed = f.run(["hook-removed"], { ...labels, CLEANUP_VOLUME_FAIL: "owned-postgres" });
+  assert.notEqual(failed.status, 0);
+  assert.deepEqual(f.containers(), []);
+  assert.equal(f.entry().cleanup_pending, true);
+  const retry = f.run(["startup"], labels);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.deepEqual(f.volumes(), ["shared-cache"]);
+  assert.equal(f.entry(), undefined);
+});
+
+test("cleanup discovers network-only leftovers but preserves live and shared networks", (t) => {
+  const f = fixture(t, {
+    tracked: false,
+    containers: [],
+    networks: ["dead-relay", "live-relay", "shared-network"],
+  });
+  const result = f.run(["cleanup"], {
+    CLEANUP_NETWORK_LABELS: JSON.stringify({
+      "dead-relay": { "wtdc.owner.workspace": f.checkout },
+      "live-relay": { "wtdc.owner.workspace": path.dirname(f.checkout) },
+    }),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.networks(), ["live-relay", "shared-network"]);
+  assert.equal(f.entry(), undefined);
+});
+
+test("network cleanup follows container removal and retains failed cleanup for retry", (t) => {
+  const f = fixture(t, { networks: ["owned-relay", "shared-network"] });
+  const labels = {
+    CLEANUP_NETWORK_LABELS: JSON.stringify({
+      "owned-relay": { "wtdc.owner.workspace": f.checkout },
+    }),
+  };
+  const failed = f.run(["hook-removed"], { ...labels, CLEANUP_NETWORK_FAIL: "owned-relay" });
+  assert.notEqual(failed.status, 0);
+  assert.deepEqual(f.containers(), []);
+  assert.deepEqual(f.networks(), ["owned-relay", "shared-network"]);
+  assert.equal(f.entry().cleanup_pending, true);
+  const retry = f.run(["startup"], labels);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.deepEqual(f.networks(), ["shared-network"]);
+  assert.equal(f.entry(), undefined);
+});
+
+test("keep-container disables discovery of network-only leftovers", (t) => {
+  const f = fixture(t, { tracked: false, containers: [], networks: ["owned-relay"] });
+  const result = f.run(["cleanup"], {
+    WTDC_KEEP_CONTAINER: "1",
+    CLEANUP_NETWORK_LABELS: JSON.stringify({
+      "owned-relay": { "wtdc.owner.workspace": f.checkout },
+    }),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.networks(), ["owned-relay"]);
 });
 
 test("volume removal failure retains names after the container is gone", (t) => {

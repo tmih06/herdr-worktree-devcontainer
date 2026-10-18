@@ -565,9 +565,9 @@ function startup() {
 }
 
 /**
- * Retry journalled teardown, then discover untracked containers by ownership.
- * Only missing checkout directories qualify without state: an existing folder
- * may be a valid non-Git workspace. Keep-container disables orphan discovery.
+ * Retry journalled teardown, then discover untracked containers, volumes and
+ * networks by ownership. Only missing checkout directories qualify without state:
+ * an existing folder may be a non-Git workspace. Keep-container disables discovery.
  */
 function cleanup(config = loadConfig()) {
   const entries = state.list();

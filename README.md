@@ -114,7 +114,7 @@ For host tools and authentication mounts, see
 ## Worktree cleanup
 
 Use `remove-worktree` for Docker cleanup before Git removal. If cleanup fails,
-the checkout stays intact. User-defined volumes are preserved.
+the checkout stays intact. Unlabelled user-defined volumes are preserved.
 
 To get the same ordering with Herdr's native **Remove worktree**, run:
 
@@ -129,13 +129,18 @@ pending cleanup on startup; use `cleanup` to retry immediately.
 
 Startup and `cleanup` also discover untracked containers through
 `devcontainer.local_folder` and `wtdc.owner.workspace` labels when the checkout
-directory is gone. Teardown removes those containers plus Compose containers
-whose working directory exactly matches the checkout, preserving user-defined
-volumes. Existing untracked folders, shared helpers without ownership labels,
-and unlabelled build containers are not swept. `WTDC_KEEP_CONTAINER=1` disables
+directory is gone. Volumes and networks labelled
+`wtdc.owner.workspace=<absolute checkout path>` are explicitly owned and deleted
+too, including when no container or plugin state remains. Teardown removes those
+containers plus Compose containers whose working directory exactly matches the
+checkout, then removes owned networks and volumes. Network removal never forcibly
+disconnects remaining endpoints: a busy network retains cleanup state for retry.
+Unlabelled user-defined volumes, networks, and shared caches are preserved.
+Existing untracked folders, shared helpers without ownership labels, and
+unlabelled build containers are not swept. `WTDC_KEEP_CONTAINER=1` disables
 automatic orphan discovery.
 
-Cleanup destroys containers and their owned volumes, never images. Cached
+Cleanup destroys containers and their owned volumes and networks, never images. Cached
 feature builds and uid-adjusted images stay on disk as shared caches; reclaim
 them yourself with `docker rmi` or `docker image prune`.
 
